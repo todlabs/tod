@@ -16,9 +16,14 @@ yarn-error.log*
 # IDE
 .vscode
 .idea
+.claude
 *.swp
 *.swo
 *~
+
+# Build scripts (only build.cjs is needed)
+build.bat
+build.mjs
 
 # OS
 .DS_Store
