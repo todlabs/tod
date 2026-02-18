@@ -24,42 +24,41 @@
 </p>
 
 <p align="center">
-  <a href="#-features">Features</a> •
-  <a href="#-installation">Installation</a> •
-  <a href="#-usage">Usage</a> •
-  <a href="#-configuration">Configuration</a> •
-  <a href="#-commands">Commands</a>
+  <a href="#features">Features</a> •
+  <a href="#installation">Installation</a> •
+  <a href="#usage">Usage</a> •
+  <a href="#configuration">Configuration</a> •
+  <a href="#commands">Commands</a>
 </p>
 
 ---
 
-## ✨ Features
+## Features
 
-- **💬 Natural language** — Just describe what you want in plain English
-- **📁 @-mentions** — Reference files with `@filename` for context
-- **⚡ Slash commands** — Quick access with `/providers`, `/models`, `/clear`, and more
-- **🔄 Background tasks** — Execute long-running operations without blocking
-- **🌐 Multi-provider** — Works with OpenAI, Anthropic, and other LLM providers
-- **🖥️ Terminal-native** — Smooth TUI built with React + Ink
+- **Natural language commands** — Just describe what you want in plain English
+- **File @-mentions** — Reference files with `@filename` for context-aware responses
+- **Slash commands** — Quick access with `/providers`, `/models`, `/clear`, and more
+- **Background tasks** — Execute long-running operations without blocking your workflow
+- **Multi-provider support** — Works with OpenAI, Anthropic, and other LLM providers
+- **Terminal-native** — Built with React + Ink for a smooth TUI experience
 
-## 📦 Installation
+## Installation
 
 ```bash
-# Via npm
 npm install -g tod
+```
 
-# Or run directly
+Or run directly with npx:
+
+```bash
 npx tod
 ```
 
-**Requirements:** Node.js 18+
-
-## 🚀 Usage
+## Usage
 
 Start TOD in your project directory:
 
 ```bash
-cd your-project
 tod
 ```
 
@@ -71,7 +70,7 @@ Then just type what you need:
 > /clear
 ```
 
-## ⚙️ Configuration
+## Configuration
 
 TOD stores config in `~/.tod/config.json`:
 
@@ -85,7 +84,7 @@ TOD stores config in `~/.tod/config.json`:
 
 Or use the interactive menu: `/providers`
 
-## ⌨️ Commands
+## Commands
 
 | Command | Description |
 |---------|-------------|
@@ -98,7 +97,7 @@ Or use the interactive menu: `/providers`
 | `/mcp` | Show active MCP servers |
 | `/exit` | Exit TOD |
 
-## 🛠️ Development
+## Development
 
 ```bash
 # Clone
@@ -115,12 +114,11 @@ npm run build
 npm run dev
 ```
 
-## 📄 License
+## Requirements
 
-MIT © [todlabs](https://github.com/todlabs)
+- Node.js 18+
+- API key for your chosen LLM provider
 
----
+## License
 
-<p align="center">
-  <sub>Built with ❤️ for the terminal</sub>
-</p>
+MIT
