@@ -1,0 +1,74 @@
+#!/usr/bin/env node
+
+import React from 'react';
+import { render } from 'ink';
+import App from './ui/App.js';
+import { Agent } from './agent/index.js';
+import { BackgroundTaskManager } from './agent/backgroundManager.js';
+import { McpManager } from './services/mcp-manager.js';
+import { configService } from './services/config.js';
+import { logger } from './services/logger.js';
+import { setBackgroundManager, setMcpManager } from './tools/index.js';
+
+try {
+  configService.getConfig();
+  logger.info('TOD starting...');
+} catch (error) {
+  console.error('Error: Invalid configuration');
+  if (error instanceof Error) {
+    console.error(error.message);
+  }
+  process.exit(1);
+}
+
+const agentConfig = configService.getConfig();
+const agent = new Agent(agentConfig);
+const backgroundManager = new BackgroundTaskManager(agentConfig);
+backgroundManager.setAutoCleanupTimeout(10000);
+setBackgroundManager(backgroundManager);
+
+// Initialize MCP servers
+const mcpManager = new McpManager();
+setMcpManager(mcpManager);
+
+const mcpServers = configService.getMcpServers();
+const hasMcpServers = Object.keys(mcpServers).length > 0;
+
+if (hasMcpServers) {
+  logger.info('Connecting MCP servers...', { count: Object.keys(mcpServers).length });
+  mcpManager.connectAll(mcpServers).then(() => {
+    const status = mcpManager.getStatusSummary();
+    logger.info('MCP servers ready', { connected: status.connected, total: status.total });
+    const descriptions = mcpManager.getToolDescriptions();
+    if (descriptions) {
+      agent.setMcpToolDescriptions(descriptions);
+    }
+  }).catch(error => {
+    logger.error('MCP initialization error', { error });
+  });
+}
+
+logger.info('Application initialized', { model: configService.getModel() });
+
+if (process.stdin.isTTY) {
+  console.clear();
+
+  const { waitUntilExit } = render(
+    React.createElement(App, {
+      agent,
+      backgroundManager,
+      mcpManager: hasMcpServers ? mcpManager : undefined,
+      version: 'v1.1.0',
+    })
+  );
+
+  waitUntilExit().then(async () => {
+    await mcpManager.shutdown();
+    logger.info('Goodbye!');
+    console.log('\nGoodbye!');
+    process.exit(0);
+  });
+} else {
+  console.error('Error: This application requires an interactive TTY.');
+  process.exit(1);
+}
