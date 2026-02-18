@@ -60,6 +60,11 @@ export const commands: Command[] = [
     description: 'List available skills',
     action: () => 'list_skills',
   },
+  {
+    name: '/skill-off',
+    description: 'Deactivate current skill',
+    action: () => 'skill_off',
+  },
 ];
 
 // Dynamic skill commands

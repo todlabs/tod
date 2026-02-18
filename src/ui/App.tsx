@@ -521,6 +521,7 @@ export default function App({ agent, backgroundManager, mcpManager, version }: A
     if (cmdResult === 'tasks') { handleListTasks(); return; }
     if (cmdResult === 'show_mcp') { handleShowMcp(); return; }
     if (cmdResult === 'list_skills') { handleListSkills(); return; }
+    if (cmdResult === 'skill_off') { handleSkillOff(); return; }
     if (cmdResult?.startsWith('skill:')) {
       const skillName = cmdResult.replace('skill:', '');
       await handleSkill(skillName);
@@ -544,13 +545,15 @@ export default function App({ agent, backgroundManager, mcpManager, version }: A
       return;
     }
 
-    // Add skill content as a system message context
-    addMessage({
-      role: 'system',
-      content: `Skill "${skillName}" activated:\n${skill.content}`,
-    });
+    // Set skill as active for the agent
+    agent.setActiveSkill(skill.content);
 
-    addSystemMessage(`Skill "${skillName}" activated. ${skill.isGlobal ? '(global)' : '(project)'}`);
+    addSystemMessage(`Skill "${skillName}" activated. ${skill.isGlobal ? '(global)' : '(project)'}\n\nYou can now use this skill. Type your request and the skill instructions will guide the AI.`);
+  };
+
+  const handleSkillOff = () => {
+    agent.setActiveSkill(null);
+    addSystemMessage('Skill deactivated. Back to normal mode.');
   };
 
   const handleCompactContext = async () => {

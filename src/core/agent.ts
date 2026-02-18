@@ -17,11 +17,19 @@ export class Agent {
   private messages: MessageManager;
   private isProcessing = false;
   private backgroundTaskResultHandlers: BackgroundTaskResultHandler[] = [];
+  private activeSkillContent: string | null = null;
 
   constructor(config: AgentConfig) {
     this.llm = new LLMClient(config);
     this.messages = new MessageManager();
     logger.info('Agent created');
+  }
+
+  setActiveSkill(content: string | null): void {
+    this.activeSkillContent = content;
+    if (content) {
+      logger.info('Skill activated', { contentLength: content.length });
+    }
   }
 
   getMessages(): AgentMessage[] {
@@ -90,7 +98,12 @@ export class Agent {
     logger.info('Processing user message', { length: userMessage.length });
 
     try {
-      this.messages.addMessage('user', userMessage);
+      // Add skill context if active
+      const messageWithSkill = this.activeSkillContent
+        ? `[ACTIVE SKILL]\n${this.activeSkillContent}\n\n[USER MESSAGE]\n${userMessage}`
+        : userMessage;
+
+      this.messages.addMessage('user', messageWithSkill);
       await this.runAgentLoop(callbacks);
     } finally {
       this.isProcessing = false;
