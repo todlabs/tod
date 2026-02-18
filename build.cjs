@@ -1,8 +1,10 @@
 const { execSync } = require('child_process');
+const path = require('path');
 
 try {
   console.log('Building with TypeScript...');
-  execSync('npx -y typescript tsc -p .', { 
+  const tscPath = path.join(__dirname, 'node_modules', '.bin', 'tsc');
+  execSync(`"${tscPath}" -p .`, { 
     stdio: 'inherit',
     shell: true
   });
