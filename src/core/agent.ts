@@ -29,6 +29,8 @@ export class Agent {
     this.activeSkillContent = content;
     if (content) {
       logger.info('Skill activated', { contentLength: content.length });
+      // Add skill as system message so agent always sees it
+      this.messages.addSystemMessage(`[ACTIVE SKILL - FOLLOW THESE INSTRUCTIONS]\n${content}\n[END SKILL]`);
     }
   }
 
@@ -98,12 +100,8 @@ export class Agent {
     logger.info('Processing user message', { length: userMessage.length });
 
     try {
-      // Add skill context if active
-      const messageWithSkill = this.activeSkillContent
-        ? `[ACTIVE SKILL]\n${this.activeSkillContent}\n\n[USER MESSAGE]\n${userMessage}`
-        : userMessage;
-
-      this.messages.addMessage('user', messageWithSkill);
+      // Skill is already in system context via setActiveSkill
+      this.messages.addMessage('user', userMessage);
       await this.runAgentLoop(callbacks);
     } finally {
       this.isProcessing = false;
