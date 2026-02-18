@@ -1,5 +1,6 @@
 import { initConfig, configService } from '../services/config.js';
 import { providers, getProvider } from '../services/providers.js';
+import { skillsManager } from '../services/skills.js';
 
 export interface Command {
   name: string;
@@ -54,33 +55,61 @@ export const commands: Command[] = [
     description: 'Show active MCP servers',
     action: () => 'show_mcp',
   },
+  {
+    name: '/skills',
+    description: 'List available skills',
+    action: () => 'list_skills',
+  },
 ];
+
+// Dynamic skill commands
+export function getSkillCommands(): Command[] {
+  const skills = skillsManager.listSkills();
+  return skills.map(skill => ({
+    name: `/${skill.name}`,
+    description: skill.description,
+    action: () => `skill:${skill.name}`,
+  }));
+}
 
 export function getCommandSuggestions(input: string): Command[] {
   if (!input.startsWith('/')) return [];
 
   const searchTerm = input.toLowerCase();
-  return commands.filter(cmd => cmd.name.toLowerCase().startsWith(searchTerm));
+  const builtinCommands = commands.filter(cmd => cmd.name.toLowerCase().startsWith(searchTerm));
+  const skillCommands = getSkillCommands().filter(cmd => cmd.name.toLowerCase().startsWith(searchTerm));
+  return [...builtinCommands, ...skillCommands];
 }
 
 export function isCommand(input: string): boolean {
-  return input.startsWith('/') && commands.some(cmd => {
-    const cmdName = input.split(' ')[0];
-    return cmd.name === cmdName;
-  });
+  if (!input.startsWith('/')) return false;
+  const cmdName = input.split(' ')[0];
+  const builtinMatch = commands.some(cmd => cmd.name === cmdName);
+  const skillMatch = getSkillCommands().some(cmd => cmd.name === cmdName);
+  return builtinMatch || skillMatch;
 }
 
 export function executeCommand(input: string): string | null {
   const cmdName = input.split(' ')[0];
   const args = input.slice(cmdName.length + 1).trim().split(' ').filter(arg => arg.length > 0);
 
-  const command = commands.find(cmd => cmd.name === cmdName);
-  if (!command) return null;
-
-  if (command.actionWithArgs && args.length > 0) {
-    return command.actionWithArgs(args);
+  // Check builtin commands first
+  const builtinCommand = commands.find(cmd => cmd.name === cmdName);
+  if (builtinCommand) {
+    if (builtinCommand.actionWithArgs && args.length > 0) {
+      return builtinCommand.actionWithArgs(args);
+    }
+    const result = builtinCommand.action();
+    return typeof result === 'string' ? result : null;
   }
 
-  const result = command.action();
-  return typeof result === 'string' ? result : null;
+  // Check skill commands
+  const skillCommands = getSkillCommands();
+  const skillCommand = skillCommands.find(cmd => cmd.name === cmdName);
+  if (skillCommand) {
+    const result = skillCommand.action();
+    return typeof result === 'string' ? result : null;
+  }
+
+  return null;
 }

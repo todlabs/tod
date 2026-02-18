@@ -14,6 +14,7 @@ import InputArea from './components/InputArea.js';
 import StatusBar from './components/StatusBar.js';
 import { useMessageProcessing } from './hooks/useMessageProcessing.js';
 import { executeCommand, commands, getCommandSuggestions } from './commands.js';
+import { skillsManager } from '../services/skills.js';
 import WorkingIndicator from './WorkingIndicator.js';
 
 function setTitle(title: string) {
@@ -519,10 +520,37 @@ export default function App({ agent, backgroundManager, mcpManager, version }: A
     if (cmdResult === 'exit') { process.exit(0); }
     if (cmdResult === 'tasks') { handleListTasks(); return; }
     if (cmdResult === 'show_mcp') { handleShowMcp(); return; }
+    if (cmdResult === 'list_skills') { handleListSkills(); return; }
+    if (cmdResult?.startsWith('skill:')) {
+      const skillName = cmdResult.replace('skill:', '');
+      await handleSkill(skillName);
+      return;
+    }
     if (cmdResult && typeof cmdResult === 'string') {
       addSystemMessage(cmdResult);
       return;
     }
+  };
+
+  const handleListSkills = () => {
+    const help = skillsManager.getSkillHelp();
+    addSystemMessage(help);
+  };
+
+  const handleSkill = async (skillName: string) => {
+    const skill = skillsManager.loadSkill(skillName);
+    if (!skill) {
+      addSystemMessage(`Skill "${skillName}" not found. Use /skills to list available skills.`);
+      return;
+    }
+
+    // Add skill content as a system message context
+    addMessage({
+      role: 'system',
+      content: `Skill "${skillName}" activated:\n${skill.content}`,
+    });
+
+    addSystemMessage(`Skill "${skillName}" activated. ${skill.isGlobal ? '(global)' : '(project)'}`);
   };
 
   const handleCompactContext = async () => {

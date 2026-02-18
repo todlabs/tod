@@ -9,6 +9,7 @@ import { McpManager } from './services/mcp-manager.js';
 import { configService } from './services/config.js';
 import { logger } from './services/logger.js';
 import { setBackgroundManager, setMcpManager } from './tools/index.js';
+import { skillsManager } from './services/skills.js';
 
 try {
   configService.getConfig();
@@ -47,6 +48,14 @@ if (hasMcpServers) {
     logger.error('MCP initialization error', { error });
   });
 }
+
+// Initialize skills
+const skills = skillsManager.listSkills();
+if (skills.length === 0) {
+  logger.info('Creating example skills...');
+  skillsManager.createExampleSkills();
+}
+logger.info('Skills loaded', { count: skillsManager.listSkills().length });
 
 logger.info('Application initialized', { model: configService.getModel() });
 
