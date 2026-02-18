@@ -28,7 +28,8 @@
   <a href="#installation">Installation</a> •
   <a href="#usage">Usage</a> •
   <a href="#configuration">Configuration</a> •
-  <a href="#commands">Commands</a>
+  <a href="#commands">Commands</a> •
+  <a href="#mcp-model-context-protocol">MCP</a>
 </p>
 
 ---
@@ -44,14 +45,21 @@
 
 ## Installation
 
-```bash
-npm install -g tod
-```
-
-Or run directly with npx:
+> Note: npm package coming soon. For now, build from source:
 
 ```bash
-npx tod
+# Clone
+git clone https://github.com/todlabs/tod.git
+cd tod
+
+# Install dependencies
+npm install
+
+# Build
+npm run build
+
+# Run
+node dist/index.js
 ```
 
 ## Usage
@@ -97,22 +105,14 @@ Or use the interactive menu: `/providers`
 | `/mcp` | Show active MCP servers |
 | `/exit` | Exit TOD |
 
-## Development
+## MCP (Model Context Protocol)
 
-```bash
-# Clone
-git clone https://github.com/todlabs/tod.git
-cd tod
+TOD supports MCP to connect to external tools and services. See documentation:
 
-# Install dependencies
-npm install
-
-# Build
-npm run build
-
-# Run in dev mode
-npm run dev
-```
+- [English](docs/mcp/README.md)
+- [Русский](docs/mcp/README.ru.md)
+- [Deutsch](docs/mcp/README.de.md)
+- [Français](docs/mcp/README.fr.md)
 
 ## Requirements
 
