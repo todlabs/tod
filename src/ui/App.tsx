@@ -552,10 +552,11 @@ export default function App({ agent, backgroundManager, mcpManager, version }: A
   const handleSkill = async (skillName: string, message?: string | null) => {
     const skill = skillsManager.loadSkill(skillName);
     const skillDesc = skill ? skill.description : 'Custom skill';
-    const location = skill?.isGlobal ? '🌍' : '📁';
+    const location = skill?.isGlobal ? 'global' : 'project';
+    const locationPath = skill?.isGlobal ? '~/.tod/skills/' : '.tod/skills/';
     
-    // Красивое сообщение о включении скилла
-    addSystemMessage(`✨ Skill activated: ${location} /${skillName}\n   ${skillDesc}`);
+    // Минималистичное сообщение в стиле терминала
+    addSystemMessage(`[skill] /${skillName} activated (${location})\n  ${skillDesc}\n  ${locationPath}${skillName}/`);
     
     // Если есть сообщение после имени скилла - сразу обрабатываем
     if (message && message.trim()) {
