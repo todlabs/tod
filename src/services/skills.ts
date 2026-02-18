@@ -237,44 +237,6 @@ When the user wants to delete a skill:
     // Create skill-creator skill globally
     const skillCreatorContent = this.getSkillCreatorTemplate();
     this.createSkill('skill-creator', skillCreatorContent, true);
-
-    // Create a simple commit skill as example
-    const commitSkillContent = `# Git Commit Helper
-
-Helps create meaningful git commit messages following conventional commits format.
-
-## Instructions
-
-When the user invokes this skill, help them create a git commit message:
-
-1. Analyze the changes (git diff --staged)
-2. Determine the type of change:
-   - feat: new feature
-   - fix: bug fix
-   - docs: documentation changes
-   - style: formatting changes
-   - refactor: code refactoring
-   - test: adding tests
-   - chore: maintenance tasks
-
-3. Create a concise commit message in format: type(scope): description
-4. If needed, suggest a longer description in the body
-
-## Examples
-
-User: /commit
-AI: Let me check the staged changes...
-[Analyzes git diff]
-AI: Suggested commit message:
-feat(auth): add password reset functionality
-
-- Implement password reset endpoint
-- Add email service integration
-- Create reset token validation
-
-Type 'yes' to commit or provide your own message.`;
-
-    this.createSkill('commit', commitSkillContent, true);
   }
 }
 

@@ -548,7 +548,15 @@ export default function App({ agent, backgroundManager, mcpManager, version }: A
     // Set skill as active for the agent
     agent.setActiveSkill(skill.content);
 
-    addSystemMessage(`Skill "${skillName}" activated. ${skill.isGlobal ? '(global)' : '(project)'}\n\nYou can now use this skill. Type your request and the skill instructions will guide the AI.`);
+    addSystemMessage(`Skill "${skillName}" activated. ${skill.isGlobal ? '(global)' : '(project)'}`);
+
+    // For skill-creator, immediately ask what skill to create
+    if (skillName === 'skill-creator') {
+      addMessage({
+        role: 'assistant',
+        content: 'Привет! Я помогу тебе создать новый skill.\n\nКакой skill тебе нужно создать? Опиши:\n- Название (например: deploy-railway, code-review, test-writer)\n- Что он должен делать\n- Для каких задач',
+      });
+    }
   };
 
   const handleSkillOff = () => {
