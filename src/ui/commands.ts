@@ -74,6 +74,7 @@ export function getSkillCommands(): Command[] {
     name: `/${skill.name}`,
     description: skill.description,
     action: () => `skill:${skill.name}`,
+    actionWithArgs: (args: string[]) => `skill:${skill.name}:${args.join(' ')}`,
   }));
 }
 
@@ -112,6 +113,10 @@ export function executeCommand(input: string): string | null {
   const skillCommands = getSkillCommands();
   const skillCommand = skillCommands.find(cmd => cmd.name === cmdName);
   if (skillCommand) {
+    const fullArgs = input.slice(cmdName.length + 1).trim();
+    if (fullArgs && skillCommand.actionWithArgs) {
+      return skillCommand.actionWithArgs([fullArgs]);
+    }
     const result = skillCommand.action();
     return typeof result === 'string' ? result : null;
   }

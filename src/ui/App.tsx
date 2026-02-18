@@ -523,8 +523,19 @@ export default function App({ agent, backgroundManager, mcpManager, version }: A
     if (cmdResult === 'list_skills') { handleListSkills(); return; }
     if (cmdResult === 'skill_off') { handleSkillOff(); return; }
     if (cmdResult?.startsWith('skill:')) {
-      const skillName = cmdResult.replace('skill:', '');
-      await handleSkill(skillName);
+      const skillData = cmdResult.replace('skill:', '');
+      const colonIndex = skillData.indexOf(':');
+      let skillName: string;
+      let skillMessage: string | null = null;
+      
+      if (colonIndex > 0) {
+        skillName = skillData.substring(0, colonIndex);
+        skillMessage = skillData.substring(colonIndex + 1);
+      } else {
+        skillName = skillData;
+      }
+      
+      await handleSkill(skillName, skillMessage);
       return;
     }
     if (cmdResult && typeof cmdResult === 'string') {
@@ -538,14 +549,23 @@ export default function App({ agent, backgroundManager, mcpManager, version }: A
     addSystemMessage(help);
   };
 
-  const handleSkill = async (skillName: string) => {
-    // Instead of loading skill directly, we tell the user to let the agent handle it
-    addSystemMessage(`Skill "/${skillName}" ready. The agent will use read_skill("${skillName}") when needed.`);
+  const handleSkill = async (skillName: string, message?: string | null) => {
+    const skill = skillsManager.loadSkill(skillName);
+    const skillDesc = skill ? skill.description : 'Custom skill';
+    const location = skill?.isGlobal ? '🌍' : '📁';
+    
+    // Красивое сообщение о включении скилла
+    addSystemMessage(`✨ Skill activated: ${location} /${skillName}\n   ${skillDesc}`);
+    
+    // Если есть сообщение после имени скилла - сразу обрабатываем
+    if (message && message.trim()) {
+      await handlePreprocess();
+      await processMessage(message.trim());
+    }
   };
 
   const handleSkillOff = () => {
-    agent.setActiveSkill(null);
-    addSystemMessage('Skill deactivated. Back to normal mode.');
+    addSystemMessage('Skill mode deactivated.');
   };
 
   const handleCompactContext = async () => {
