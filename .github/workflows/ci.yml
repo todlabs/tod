@@ -31,11 +31,6 @@ jobs:
     
     - name: Build project
       run: npm run build
-    
-    - name: Test executable
-      run: |
-        chmod +x dist/index.js
-        node dist/index.js --version || true
 
   release:
     needs: lint-and-build

@@ -1,12 +1,5 @@
 #!/usr/bin/env node
 
-const VERSION = '1.1.0';
-
-if (process.argv.includes('--version') || process.argv.includes('-v')) {
-  console.log(VERSION);
-  process.exit(0);
-}
-
 import React from 'react';
 import { render } from 'ink';
 import App from './ui/App.js';
