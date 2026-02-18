@@ -1,10 +1,12 @@
 import { execSync } from 'child_process';
 import { readFileSync, writeFileSync, readdirSync, mkdirSync, existsSync, type Dirent } from 'fs';
 import { join } from 'path';
+import * as os from 'os';
 import type { ChatCompletionTool } from 'openai/resources/chat/completions';
 import { BackgroundTaskManager } from '../agent/backgroundManager.js';
 import { McpManager } from '../services/mcp-manager.js';
 import { logger } from '../services/logger.js';
+import { skillsManager } from '../services/skills.js';
 
 let backgroundManager: BackgroundTaskManager | null = null;
 let mcpManager: McpManager | null = null;
@@ -168,6 +170,34 @@ export const tools: ChatCompletionTool[] = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'list_skills',
+      description: 'Получить список доступных навыков (skills). Используй когда пользователь хочет создать новый навык или узнать какие навыки доступны.',
+      parameters: {
+        type: 'object',
+        properties: {},
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'read_skill',
+      description: 'Прочитать содержимое навыка (skill). Используй когда нужно использовать конкретный навык для выполнения задачи.',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: {
+            type: 'string',
+            description: 'Название навыка (например: skill-creator, web-search)',
+          },
+        },
+        required: ['name'],
+      },
+    },
+  },
 ];
 
 interface ToolArgs {
@@ -258,6 +288,21 @@ export function executeTool(toolName: string, args: ToolArgs): Promise<string> |
         }
         // Это блокирующая операция - ждем завершения задачи
         return backgroundManager.waitForTask(args.task_id);
+
+      case 'list_skills':
+        const skills = skillsManager.listSkills();
+        if (skills.length === 0) {
+          return 'Нет доступных навыков. Навыки хранятся в ~/.tod/skills/ (глобальные) или .tod/skills/ (проектные).';
+        }
+        return skills.map(s => `- ${s.name}: ${s.description} ${s.isGlobal ? '(global)' : '(project)'}`).join('\n');
+
+      case 'read_skill':
+        if (!args.name) throw new Error('Skill name is required');
+        const skill = skillsManager.loadSkill(args.name);
+        if (!skill) {
+          throw new Error(`Навык "${args.name}" не найден. Используй list_skills чтобы увидеть доступные.`);
+        }
+        return skill.content;
 
       default:
         // Check if it's an MCP tool

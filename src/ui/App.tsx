@@ -539,24 +539,8 @@ export default function App({ agent, backgroundManager, mcpManager, version }: A
   };
 
   const handleSkill = async (skillName: string) => {
-    const skill = skillsManager.loadSkill(skillName);
-    if (!skill) {
-      addSystemMessage(`Skill "${skillName}" not found. Use /skills to list available skills.`);
-      return;
-    }
-
-    // Set skill as active for the agent
-    agent.setActiveSkill(skill.content);
-
-    addSystemMessage(`Skill "${skillName}" activated. ${skill.isGlobal ? '(global)' : '(project)'}`);
-
-    // For skill-creator, immediately ask what skill to create
-    if (skillName === 'skill-creator') {
-      addMessage({
-        role: 'assistant',
-        content: 'Привет! Я помогу тебе создать новый skill.\n\nКакой skill тебе нужно создать? Опиши:\n- Название (например: deploy-railway, code-review, test-writer)\n- Что он должен делать\n- Для каких задач',
-      });
-    }
+    // Instead of loading skill directly, we tell the user to let the agent handle it
+    addSystemMessage(`Skill "/${skillName}" ready. The agent will use read_skill("${skillName}") when needed.`);
   };
 
   const handleSkillOff = () => {

@@ -29,8 +29,6 @@ export class Agent {
     this.activeSkillContent = content;
     if (content) {
       logger.info('Skill activated', { contentLength: content.length });
-      // Add skill as system message so agent always sees it
-      this.messages.addSystemMessage(`[ACTIVE SKILL - FOLLOW THESE INSTRUCTIONS]\n${content}\n[END SKILL]`);
     }
   }
 
