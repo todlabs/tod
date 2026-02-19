@@ -114,7 +114,7 @@ export class McpManager {
   }
 
   parseMcpToolName(prefixedName: string): { serverName: string; toolName: string } | null {
-    const match = prefixedName.match(/^mcp__([^_]+)__(.+)$/);
+    const match = prefixedName.match(/^mcp__(.+?)__(.+)$/);
     if (!match) return null;
     return { serverName: match[1], toolName: match[2] };
   }

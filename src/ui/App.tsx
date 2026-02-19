@@ -304,16 +304,15 @@ export default function App({ agent, backgroundManager, mcpManager, version }: A
 
   useEffect(() => {
     const unsubscribe = backgroundManager.onTaskResult((taskId, result, task) => {
-      const preview = result ? `: ${result.substring(0, 200)}` : '';
+      // Inject result into agent context (ephemeral, truncated)
+      agent.handleBackgroundTaskResult(taskId, result);
+      agent.updateBackgroundTasksContext(backgroundManager.getTasksSummary());
+
+      // Short UI notification
       addMessage({
         role: 'assistant',
-        content: `✓ Background task "${task.name}" completed${preview}`,
+        content: `[${taskId}] "${task.name}" done`,
       });
-      agent.handleBackgroundTaskResult(taskId, result);
-      if (!agent.isBusy()) {
-        const tasksSummary = backgroundManager.getTasksSummary();
-        agent.updateBackgroundTasksContext(tasksSummary);
-      }
     });
     return () => { unsubscribe && unsubscribe(); };
   }, [backgroundManager, agent, addMessage]);
@@ -443,6 +442,7 @@ export default function App({ agent, backgroundManager, mcpManager, version }: A
 
     // Normal mode
     if (key.escape && isProcessing) {
+      agent.abort();
       stopProcessing();
       return;
     }
@@ -467,19 +467,19 @@ export default function App({ agent, backgroundManager, mcpManager, version }: A
     }
   });
 
-  const handlePreprocess = async () => {
+  const handlePreprocess = () => {
     const tasksSummary = backgroundManager.getTasksSummary();
-    await agent.updateBackgroundTasksContext(tasksSummary);
+    agent.updateBackgroundTasksContext(tasksSummary);
   };
 
   const handleSubmit = async (value: string) => {
-    if (menu) return; // block input while menu is open
+    if (menu) return;
     setInput('');
     if (value.startsWith('/')) {
       await handleCommand(value);
       return;
     }
-    await handlePreprocess();
+    handlePreprocess();
     await processMessage(value);
   };
 
@@ -567,7 +567,7 @@ export default function App({ agent, backgroundManager, mcpManager, version }: A
 
     // if user passed inline arguments/message - execute task right away
     if (message && message.trim()) {
-      await handlePreprocess();
+      handlePreprocess();
       await processMessage(message.trim());
     }
   };
@@ -695,32 +695,47 @@ export default function App({ agent, backgroundManager, mcpManager, version }: A
 }
 
 function BackgroundTasksList({ tasks }: { tasks: BackgroundTask[] }) {
-  const [spinnerIndex, setSpinnerIndex] = useState(0);
+  const [frame, setFrame] = useState(0);
 
   useEffect(() => {
-    const interval = setInterval(() => setSpinnerIndex(prev => (prev + 1) % 4), 100);
+    const interval = setInterval(() => setFrame(prev => prev + 1), 120);
     return () => clearInterval(interval);
   }, []);
 
-  const spinnerChars = ['⠋', '⠙', '⠹', '⠸'];
-  const spinner = spinnerChars[spinnerIndex];
+  const spinnerFrames = ['|', '/', '-', '\\'];
+  const spinner = spinnerFrames[frame % spinnerFrames.length];
 
   return (
     <Box marginTop={1} flexDirection="column">
-      <Text color="gray">Background tasks:</Text>
-      {tasks.slice(-3).map(task => (
-        <Box key={task.id}>
-          <Text color={
-            task.status === 'running' ? 'cyan' :
-            task.status === 'completed' ? 'green' :
-            task.status === 'failed' ? 'red' : 'gray'
-          }>
-            {task.status === 'running' && <Text>{spinner} </Text>}
-            [{task.status}] <Text bold>{task.name}</Text>
-            {task.status === 'running' && <Text dimColor> - {task.description}</Text>}
-          </Text>
-        </Box>
-      ))}
+      {tasks.slice(-3).map(task => {
+        if (task.status === 'completed') {
+          return (
+            <Box key={task.id}>
+              <Text color="green">+ </Text>
+              <Text color="green" bold>{task.name}</Text>
+              <Text color="gray" dimColor> done</Text>
+            </Box>
+          );
+        }
+        if (task.status === 'failed') {
+          return (
+            <Box key={task.id}>
+              <Text color="red">x </Text>
+              <Text color="red" bold>{task.name}</Text>
+              <Text color="gray" dimColor> failed</Text>
+            </Box>
+          );
+        }
+        // running / pending
+        const activity = task.activity || 'Waiting';
+        return (
+          <Box key={task.id}>
+            <Text color="cyan">{spinner} </Text>
+            <Text bold>{task.name}</Text>
+            <Text color="gray"> [{activity}]</Text>
+          </Box>
+        );
+      })}
     </Box>
   );
 }

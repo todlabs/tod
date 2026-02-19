@@ -3,11 +3,6 @@ import type { ChatCompletionMessageParam } from 'openai/resources/chat/completio
 import type { AgentConfig, StreamChunk, ToolCallChunk } from './types.js';
 import { logger } from '../services/logger.js';
 
-export interface StreamCallbacks {
-  onChunk: (chunk: StreamChunk) => void;
-  onToolCall?: (toolName: string, args: unknown) => void;
-}
-
 export class LLMClient {
   private openai: OpenAI;
   private _config: AgentConfig;
@@ -17,6 +12,7 @@ export class LLMClient {
     this.openai = new OpenAI({
       apiKey: config.apiKey,
       baseURL: config.baseURL,
+      timeout: 120_000, // 2 min timeout
     });
 
     logger.info('LLMClient initialized', { model: config.model });
@@ -24,16 +20,10 @@ export class LLMClient {
 
   async *streamCompletion(
     messages: ChatCompletionMessageParam[],
-    tools: any[]
+    tools: any[],
+    signal?: AbortSignal
   ): AsyncGenerator<StreamChunk> {
     logger.debug('Starting stream completion', { messageCount: messages.length, model: this._config.model });
-
-    // Фильтруем сообщения для отладки
-    const filteredMessages = messages.map(msg => ({
-      role: msg.role,
-      content: msg.content ? String(msg.content).substring(0, 200) : '',
-      tool_calls: (msg as any).tool_calls ? `${(msg as any).tool_calls.length} calls` : undefined
-    }));
 
     try {
       const requestParams: any = {
@@ -45,25 +35,28 @@ export class LLMClient {
         stream: true,
       };
 
-      // Добавляем tools только если они есть
       if (tools && tools.length > 0) {
         requestParams.tools = tools;
         requestParams.tool_choice = 'auto';
       }
 
-      logger.debug('Making API request', { 
+      logger.debug('Making API request', {
         model: requestParams.model,
         hasTools: !!requestParams.tools,
-        hasThinking: !!requestParams.chat_template_kwargs 
       });
 
-      const completion = await (this.openai.chat.completions.create as any)(requestParams);
+      const completion = await (this.openai.chat.completions.create as any)(
+        requestParams,
+        signal ? { signal } : undefined
+      );
 
       logger.debug('Stream response received');
 
       for await (const chunk of completion) {
+        if (signal?.aborted) break;
+
         const delta = chunk.choices[0]?.delta as any;
-        
+
         const streamChunk: StreamChunk = {
           content: '',
           thinking: '',
@@ -96,30 +89,29 @@ export class LLMClient {
 
       logger.debug('Stream completion finished');
     } catch (error) {
+      if (signal?.aborted) return;
+
       const errorDetails = {
         message: error instanceof Error ? error.message : String(error),
         name: error instanceof Error ? error.name : 'Unknown',
         model: this._config.model,
         messageCount: messages.length,
-        hasTools: tools && tools.length > 0
+        hasTools: tools && tools.length > 0,
       };
 
-      // Дополнительная диагностика для API ошибок
       if (error instanceof Error && 'status' in error) {
         const apiError = error as any;
         (errorDetails as any).status = apiError.status;
         (errorDetails as any).code = apiError.code;
         (errorDetails as any).type = apiError.type;
-        
+
         logger.error('API Error', errorDetails);
-        
-        // Проверяем специфические ошибки
+
         if (apiError.status === 400) {
           logger.error('Bad Request - possible issues:', {
             invalidModel: 'Model name or parameters',
             invalidMessages: 'Message format or content',
             invalidTools: 'Tools definition or tool_choice',
-            invalidThinkingParams: 'chat_template_kwargs not supported by this model'
           });
         }
       } else {

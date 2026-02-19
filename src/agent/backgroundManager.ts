@@ -1,4 +1,4 @@
-import { Agent, AgentConfig, AgentMessage } from './index.js';
+import { Agent, AgentConfig, AgentMessage } from '../core/agent.js';
 import { logger } from '../services/logger.js';
 
 export interface BackgroundTask {

@@ -1,5 +1,7 @@
-import { execSync } from 'child_process';
-import { readFileSync, writeFileSync, readdirSync, mkdirSync, existsSync, type Dirent } from 'fs';
+import { exec } from 'child_process';
+import * as util from 'util';
+import { promises as fs } from 'fs';
+import { existsSync, type Dirent } from 'fs';
 import { join } from 'path';
 import * as os from 'os';
 import type { ChatCompletionTool } from 'openai/resources/chat/completions';
@@ -211,28 +213,34 @@ interface ToolArgs {
   wait?: boolean;
 }
 
-export function executeTool(toolName: string, args: ToolArgs): Promise<string> | string {
+const execAsync = util.promisify(exec);
+
+export async function executeTool(toolName: string, args: ToolArgs): Promise<string> {
   try {
     switch (toolName) {
       case 'read_file':
         if (!args.path) throw new Error('Path is required');
-        return readFileSync(args.path, 'utf-8');
+        return await fs.readFile(args.path, 'utf-8');
 
       case 'write_file':
         if (!args.path || args.content === undefined) {
           throw new Error('Path and content are required');
         }
-        writeFileSync(args.path, args.content, 'utf-8');
+        await fs.writeFile(args.path, args.content, 'utf-8');
         return `File written successfully: ${args.path}`;
 
       case 'execute_shell':
         if (!args.command) throw new Error('Command is required');
-        const output = execSync(args.command, { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 });
-        return output || 'Command executed successfully';
+        const { stdout, stderr } = await execAsync(args.command, {
+          encoding: 'utf-8',
+          maxBuffer: 10 * 1024 * 1024,
+          timeout: 120_000, // 2 min timeout
+        });
+        return stdout || stderr || 'Command executed successfully';
 
       case 'list_directory':
         if (!args.path) throw new Error('Path is required');
-        const items = readdirSync(args.path, { withFileTypes: true });
+        const items = await fs.readdir(args.path, { withFileTypes: true });
         return items
           .map((item: Dirent) => `${item.isDirectory() ? '[DIR]' : '[FILE]'} ${item.name}`)
           .join('\n');
@@ -240,7 +248,7 @@ export function executeTool(toolName: string, args: ToolArgs): Promise<string> |
       case 'create_directory':
         if (!args.path) throw new Error('Path is required');
         if (!existsSync(args.path)) {
-          mkdirSync(args.path, { recursive: true });
+          await fs.mkdir(args.path, { recursive: true });
           return `Directory created: ${args.path}`;
         }
         return `Directory already exists: ${args.path}`;
@@ -277,7 +285,7 @@ export function executeTool(toolName: string, args: ToolArgs): Promise<string> |
           return backgroundManager.waitForTask(taskId);
         }
         
-        return `Background task started with ID: ${taskId}. Task is running in the background. Use wait_for_task or get_background_tasks to check status.`;
+        return `Started: ${taskId}. Result will appear when done. Continue with your response to the user.`;
 
       case 'wait_for_task':
         if (!backgroundManager) {

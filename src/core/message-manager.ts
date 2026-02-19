@@ -8,6 +8,8 @@ import * as path from 'path';
 export class MessageManager {
   private messages: ChatCompletionMessageParam[] = [];
   private mcpToolDescriptions?: string;
+  // Ephemeral context — перезаписывается по ключу, не дублируется
+  private ephemeralContext: Map<string, string> = new Map();
 
   constructor(mcpToolDescriptions?: string) {
     this.mcpToolDescriptions = mcpToolDescriptions;
@@ -22,18 +24,30 @@ export class MessageManager {
         content: getSystemPrompt(process.cwd(), this.mcpToolDescriptions),
       },
     ];
+    this.ephemeralContext.clear();
     logger.debug('Messages reset');
   }
 
   setMcpToolDescriptions(descriptions: string): void {
     this.mcpToolDescriptions = descriptions;
-    // Update the system message
     if (this.messages.length > 0 && this.messages[0].role === 'system') {
       this.messages[0] = {
         role: 'system',
         content: getSystemPrompt(process.cwd(), descriptions),
       };
     }
+  }
+
+  /**
+   * Установить ephemeral context по ключу — заменяет предыдущее значение
+   * Не сохраняется в историю, добавляется при каждом вызове getMessagesWithEphemeral()
+   */
+  setEphemeralContext(key: string, content: string): void {
+    this.ephemeralContext.set(key, content);
+  }
+
+  removeEphemeralContext(key: string): void {
+    this.ephemeralContext.delete(key);
   }
 
   addMessage(role: 'user' | 'assistant' | 'tool', content: string, metadata?: {
@@ -93,6 +107,27 @@ export class MessageManager {
     return [...this.messages];
   }
 
+  /**
+   * Сообщения + ephemeral context (skill, background tasks) — для отправки в LLM
+   */
+  getMessagesWithEphemeral(): ChatCompletionMessageParam[] {
+    if (this.ephemeralContext.size === 0) return [...this.messages];
+
+    const result: ChatCompletionMessageParam[] = [this.messages[0]]; // system prompt
+
+    // Ephemeral context сразу после system prompt
+    for (const content of this.ephemeralContext.values()) {
+      result.push({ role: 'system', content });
+    }
+
+    // Остальные сообщения
+    for (let i = 1; i < this.messages.length; i++) {
+      result.push(this.messages[i]);
+    }
+
+    return result;
+  }
+
   getAgentMessages(): AgentMessage[] {
     return this.messages.map((msg: any): AgentMessage => {
       const content = typeof msg.content === 'string' ? msg.content : (msg.content ? JSON.stringify(msg.content) : '');
@@ -113,7 +148,7 @@ export class MessageManager {
   }
 
   getConversationMessages(): ChatCompletionMessageParam[] {
-    return this.messages.slice(1); // Exclude system message
+    return this.messages.slice(1);
   }
 
   compact(summary: string): void {

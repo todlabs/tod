@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useRef, useCallback } from 'react';
 import { Box, Text, useInput, useStdout } from 'ink';
 
 interface MultilineInputProps {
@@ -10,6 +10,10 @@ interface MultilineInputProps {
   blockReturn?: boolean;
 }
 
+const MAX_VISIBLE_LINES = 8;
+const PASTE_LINE_THRESHOLD = 3;
+const PASTE_CHAR_THRESHOLD = 150;
+
 export default function MultilineInput({
   value,
   onChange,
@@ -19,61 +23,59 @@ export default function MultilineInput({
   blockReturn = false,
 }: MultilineInputProps) {
   const { stdout } = useStdout();
-  // border(2) + paddingX(2) + "→ "(2) + safety(1)
   const maxLineWidth = Math.max(20, (stdout?.columns ?? 80) - 7);
 
-  useInput(
-    (input, key) => {
+  // Paste detection state
+  const [pasteInfo, setPasteInfo] = useState<{ lines: number; chars: number } | null>(null);
+  const lastInputTime = useRef(0);
+
+  const handleInput = useCallback(
+    (input: string, key: any) => {
       if (isDisabled) return;
 
+      // Submit
       if (key.return) {
-        if (!blockReturn) onSubmit(value);
+        if (!blockReturn) {
+          setPasteInfo(null);
+          onSubmit(value);
+        }
         return;
       }
 
+      // Backspace
       if (key.backspace || key.delete) {
-        if (value.length > 0) onChange(value.slice(0, -1));
+        if (value.length > 0) {
+          const newValue = value.slice(0, -1);
+          onChange(newValue);
+          // If value becomes short enough, clear paste info
+          if (pasteInfo && newValue.split('\n').length <= PASTE_LINE_THRESHOLD) {
+            setPasteInfo(null);
+          }
+        }
         return;
       }
 
+      // Regular input
       if (input && !key.ctrl && !key.meta && !key.upArrow && !key.downArrow) {
-        onChange(value + input);
+        const newValue = value + input;
+        const inputLineCount = input.split('\n').length;
+        const isPaste = inputLineCount >= PASTE_LINE_THRESHOLD || input.length > PASTE_CHAR_THRESHOLD;
+
+        if (isPaste) {
+          const totalLines = newValue.split('\n').length;
+          setPasteInfo({ lines: totalLines, chars: newValue.length });
+        }
+
+        onChange(newValue);
+        lastInputTime.current = Date.now();
       }
     },
-    { isActive: !isDisabled }
+    [value, onChange, onSubmit, isDisabled, blockReturn, pasteInfo]
   );
 
-  // Нарезаем каждую строку на куски под ширину терминала
-  // чтобы рамка InputArea правильно их обнимала
-  function wrapLine(line: string): string[] {
-    if (line.length === 0) return [''];
-    const chunks: string[] = [];
-    for (let i = 0; i < line.length; i += maxLineWidth) {
-      chunks.push(line.slice(i, i + maxLineWidth));
-    }
-    return chunks;
-  }
+  useInput(handleInput, { isActive: !isDisabled });
 
-  const rawLines = value.split('\n');
-  const maxVisible = 8;
-
-  // Строим массив визуальных строк с метаданными
-  type VisualLine = { text: string; isLast: boolean };
-  const visualLines: VisualLine[] = [];
-
-  for (let li = 0; li < Math.min(rawLines.length, maxVisible); li++) {
-    const chunks = wrapLine(rawLines[li]);
-    const isLastRaw = li === rawLines.length - 1;
-    for (let ci = 0; ci < chunks.length; ci++) {
-      visualLines.push({
-        text: chunks[ci],
-        isLast: isLastRaw && ci === chunks.length - 1,
-      });
-    }
-  }
-
-  const hiddenLines = rawLines.length > maxVisible ? rawLines.length - maxVisible : 0;
-
+  // Empty state
   if (!value) {
     return (
       <Box flexDirection="column" flexGrow={1}>
@@ -84,6 +86,40 @@ export default function MultilineInput({
       </Box>
     );
   }
+
+  // Paste summary mode
+  if (pasteInfo && pasteInfo.lines > PASTE_LINE_THRESHOLD) {
+    return (
+      <Box flexDirection="column" flexGrow={1}>
+        <Box>
+          <Text color="cyan">[Pasted {pasteInfo.lines} lines, {pasteInfo.chars} chars]</Text>
+          <Text inverse> </Text>
+        </Box>
+      </Box>
+    );
+  }
+
+  // Normal display with line wrapping
+  const rawLines = value.split('\n');
+  const visualLines: { text: string; isLast: boolean }[] = [];
+
+  const linesToShow = Math.min(rawLines.length, MAX_VISIBLE_LINES);
+  for (let li = 0; li < linesToShow; li++) {
+    const line = rawLines[li];
+    const isLastRaw = li === rawLines.length - 1;
+
+    if (line.length === 0) {
+      visualLines.push({ text: '', isLast: isLastRaw });
+    } else {
+      for (let i = 0; i < line.length; i += maxLineWidth) {
+        const chunk = line.slice(i, i + maxLineWidth);
+        const isLastChunk = i + maxLineWidth >= line.length;
+        visualLines.push({ text: chunk, isLast: isLastRaw && isLastChunk });
+      }
+    }
+  }
+
+  const hiddenLines = rawLines.length > MAX_VISIBLE_LINES ? rawLines.length - MAX_VISIBLE_LINES : 0;
 
   return (
     <Box flexDirection="column" flexGrow={1}>
@@ -96,7 +132,9 @@ export default function MultilineInput({
         </Box>
       ))}
       {hiddenLines > 0 && (
-        <Text color="gray" dimColor>... +{hiddenLines} lines</Text>
+        <Text color="gray" dimColor>
+          ... +{hiddenLines} lines
+        </Text>
       )}
     </Box>
   );

@@ -46,10 +46,12 @@ TOOLS:
 - wait_for_task(task_id) - block and wait for a background task result
 
 BACKGROUND TASKS:
-- Use when two or more things can truly happen in parallel (e.g. searching two different dirs)
-- Do NOT use for sequential operations (read then write, build then test)
-- Do NOT use for tasks that take under 5 seconds
-- Always use wait=true or wait_for_task when you need the result before continuing
+- Use for parallel work: searching multiple dirs, analyzing while coding, etc.
+- Do NOT use for sequential operations or tasks under 5 seconds
+- The background agent is a separate worker - give it a clear task in the "task" field
+- After launching: immediately continue your response to the user. Do NOT wait or explain that you launched it
+- Results appear automatically when done. Use wait=true ONLY if you absolutely need the result before continuing
+- Keep your task descriptions focused: what to do, not how to think about it
 
 SHELL TIPS:
 - Prefer execute_shell for searching: grep -r "pattern" . --include="*.ts"
