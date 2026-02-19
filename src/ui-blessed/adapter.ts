@@ -44,23 +44,24 @@ export async function runBlessedApp(
         onChunk: (chunk) => {
           if (chunk.role === 'assistant' && !chunk.isThinking) {
             response += chunk.content;
-            // Обновляем UI не чаще 100мс
+            // Обновляем UI не чаще 100мс для производительности
             if (Date.now() - lastUpdate > 100) {
-              // Для потокового вывода можно добавить временное сообщение
+              ui.setStreamingContent(response);
               lastUpdate = Date.now();
             }
           }
         },
         onToolCall: (toolName) => {
-          ui.addMessage('system', `[tool: ${toolName}]`);
+          ui.addSystemLine(`[tool: ${toolName}]`);
         }
       });
 
+      ui.endStreaming();
       if (response) {
-        ui.addMessage('assistant', response);
+        ui.addAssistantLine(response);
       }
     } catch (err) {
-      ui.addMessage('system', `Error: ${err}`);
+      ui.addSystemLine( `Error: ${err}`);
     } finally {
       ui.setProcessing(false);
     }
@@ -81,18 +82,18 @@ export async function runBlessedApp(
   // Фоновые задачи
   backgroundManager.onTaskResult((taskId, result, task) => {
     agent.handleBackgroundTaskResult(taskId, result);
-    ui.addMessage('system', `[${taskId}] "${task.name}" done`);
+    ui.addSystemLine( `[${taskId}] "${task.name}" done`);
   });
 
   // Приветствие
-  ui.addMessage('assistant', 'TOD Blessed UI ready. Type /help for commands, @ for files.');
+  ui.addSystemLine('TOD Blessed UI ready. Type /help for commands, @ for files.');
 
   async function handleCommand(text: string) {
     const result = executeCommand(text);
 
     if (result === 'help') {
       const help = commands.map(c => `  ${c.name.padEnd(20)} ${c.description}`).join('\n');
-      ui.addMessage('system', `Commands:\n${help}\n\nUse @filename to reference files`);
+      ui.addSystemLine( `Commands:\n${help}\n\nUse @filename to reference files`);
     }
     else if (result === 'clear') {
       ui.clear();
@@ -102,16 +103,16 @@ export async function runBlessedApp(
     }
     else if (result === 'tasks') {
       const tasks = backgroundManager.getAllTasks();
-      ui.addMessage('system', tasks.length === 0 ? 'No tasks' : backgroundManager.getTasksSummary());
+      ui.addSystemLine( tasks.length === 0 ? 'No tasks' : backgroundManager.getTasksSummary());
     }
     else if (result === 'show_mcp') {
       if (!mcpManager) {
-        ui.addMessage('system', 'MCP not initialized');
+        ui.addSystemLine( 'MCP not initialized');
         return;
       }
       const statuses = mcpManager.getStatus();
       if (statuses.length === 0) {
-        ui.addMessage('system', 'No MCP servers');
+        ui.addSystemLine( 'No MCP servers');
         return;
       }
       const lines = ['MCP Servers:'];
@@ -119,11 +120,11 @@ export async function runBlessedApp(
         const icon = s.status === 'connected' ? '●' : s.status === 'error' ? '✗' : '○';
         lines.push(`  ${icon} ${s.name} (${s.toolCount} tools)`);
       }
-      ui.addMessage('system', lines.join('\n'));
+      ui.addSystemLine( lines.join('\n'));
     }
     else if (result === 'list_skills') {
       const help = skillsManager.getSkillHelp();
-      ui.addMessage('system', help);
+      ui.addSystemLine( help);
     }
     else if (result?.startsWith('skill:')) {
       const skillName = result.replace('skill:', '').split(':')[0];
@@ -132,16 +133,16 @@ export async function runBlessedApp(
         activeSkill = skillName;
         const rendered = skillsManager.renderSkillInstructions(skill, '');
         agent.setActiveSkill(rendered);
-        ui.addMessage('system', `[skill] /${skill.name} activated`);
+        ui.addSystemLine( `[skill] /${skill.name} activated`);
       }
     }
     else if (result === 'skill_off') {
       activeSkill = null;
       agent.setActiveSkill(null);
-      ui.addMessage('system', 'Skill deactivated');
+      ui.addSystemLine( 'Skill deactivated');
     }
     else if (typeof result === 'string') {
-      ui.addMessage('system', result);
+      ui.addSystemLine( result);
     }
   }
 }
