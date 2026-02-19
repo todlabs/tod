@@ -102,7 +102,9 @@ export class Agent {
     logger.info('Processing user message', { length: userMessage.length });
 
     try {
-      // Skill is already in system context via setActiveSkill
+      if (this.activeSkillContent) {
+        this.messages.addSystemMessage(`Active skill instructions:\n${this.activeSkillContent}`);
+      }
       this.messages.addMessage('user', userMessage);
       await this.runAgentLoop(callbacks);
     } finally {

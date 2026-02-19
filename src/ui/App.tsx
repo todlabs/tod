@@ -551,14 +551,21 @@ export default function App({ agent, backgroundManager, mcpManager, version }: A
 
   const handleSkill = async (skillName: string, message?: string | null) => {
     const skill = skillsManager.loadSkill(skillName);
-    const skillDesc = skill ? skill.description : 'Custom skill';
-    const location = skill?.isGlobal ? 'global' : 'project';
-    const locationPath = skill?.isGlobal ? '~/.tod/skills/' : '.tod/skills/';
-    
-    // Минималистичное сообщение в стиле терминала
-    addSystemMessage(`[skill] /${skillName} activated (${location})\n  ${skillDesc}\n  ${locationPath}${skillName}/`);
-    
-    // Если есть сообщение после имени скилла - сразу обрабатываем
+    if (!skill) {
+      addSystemMessage(`Skill not found: ${skillName}`);
+      return;
+    }
+
+    const location = skill.isGlobal ? 'global' : 'project';
+    const locationPath = skill.isGlobal ? '~/.tod/skills/' : '.tod/skills/';
+    const rendered = skillsManager.renderSkillInstructions(skill, message || '');
+
+    // activate skill context until /skill-off
+    agent.setActiveSkill(rendered);
+
+    addSystemMessage(`[skill] /${skill.name} activated (${location})\n  ${skill.description}\n  ${locationPath}${skill.name}/`);
+
+    // if user passed inline arguments/message - execute task right away
     if (message && message.trim()) {
       await handlePreprocess();
       await processMessage(message.trim());
@@ -566,6 +573,7 @@ export default function App({ agent, backgroundManager, mcpManager, version }: A
   };
 
   const handleSkillOff = () => {
+    agent.setActiveSkill(null);
     addSystemMessage('Skill mode deactivated.');
   };
 

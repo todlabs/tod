@@ -69,7 +69,7 @@ export const commands: Command[] = [
 
 // Dynamic skill commands
 export function getSkillCommands(): Command[] {
-  const skills = skillsManager.listSkills();
+  const skills = skillsManager.listInvocableSkills();
   return skills.map(skill => ({
     name: `/${skill.name}`,
     description: skill.description,

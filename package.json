@@ -10,7 +10,8 @@
   "scripts": {
     "build": "node build.cjs",
     "start": "node dist/index.js",
-    "dev": "tsx src/index.ts"
+    "dev": "tsx src/index.ts",
+    "test": "npm run build && node --test test/*.test.mjs"
   },
   "keywords": [
     "ai",
