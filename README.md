@@ -42,6 +42,7 @@
 - **Background tasks** — Execute long-running operations without blocking your workflow
 - **Multi-provider support** — Works with OpenAI, Anthropic, and other LLM providers
 - **Terminal-native** — Built with React + Ink for a smooth TUI experience
+- **Alternative UIs** — Use `--native` for terminal-kit UI or `--blessed` for blessed UI
 
 ## Installation
 
@@ -78,6 +79,28 @@ Then just type what you need:
 > /clear
 ```
 
+## UI Options
+
+TOD supports multiple UI implementations:
+
+```bash
+# Default (React + Ink)
+tod
+
+# Native terminal-kit UI (lightweight, fast)
+tod --native
+
+# Blessed UI (classic terminal UI)
+tod --blessed
+```
+
+Or set via environment variable:
+
+```bash
+export TOD_UI=native  # or 'blessed', 'ink'
+tod
+```
+
 ## Configuration
 
 TOD stores config in `~/.tod/config.json`:
@@ -103,6 +126,8 @@ Or use the interactive menu: `/providers`
 | `/compact` | Compress context |
 | `/tasks` | Show background tasks |
 | `/mcp` | Show active MCP servers |
+| `/skills` | List available skills |
+| `/skill-off` | Deactivate current skill |
 | `/exit` | Exit TOD |
 
 ## MCP (Model Context Protocol)

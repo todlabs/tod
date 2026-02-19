@@ -1,15 +1,13 @@
-import { Agent } from '../core/agent.js';
-import type { AgentConfig } from '../core/types.js';
+import { Agent, AgentConfig, AgentMessage } from './index.js';
 import { logger } from '../services/logger.js';
 
 export interface BackgroundTask {
   id: string;
   name: string;
   description: string;
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+  status: 'pending' | 'running' | 'completed' | 'failed';
   activity: string; // текущая активность: Thinking, Reading, Writing, Executing и т.д.
   agent: Agent;
-  workingDir: string; // запоминаем путь при создании задачи
   result?: string;
   error?: string;
   startTime?: Date;
@@ -83,10 +81,6 @@ export class BackgroundTaskManager {
   }
 
   createTask(name: string, description: string, task: string): string {
-    if (!this.canStartTask()) {
-      throw new Error(`Cannot start new task. Maximum concurrent tasks (${this.maxConcurrentTasks}) reached.`);
-    }
-
     const taskId = `bg-${this.nextTaskId++}`;
 
     const agent = new Agent(this.agentConfig);
@@ -98,7 +92,6 @@ export class BackgroundTaskManager {
       status: 'pending',
       activity: '',
       agent,
-      workingDir: process.cwd(), // запоминаем текущую директорию при создании задачи
     };
 
     this.tasks.set(taskId, backgroundTask);
@@ -107,35 +100,6 @@ export class BackgroundTaskManager {
     this.runTask(taskId, task);
 
     return taskId;
-  }
-
-  cancelTask(taskId: string): void {
-    const task = this.tasks.get(taskId);
-    if (!task) {
-      throw new Error(`Task ${taskId} not found`);
-    }
-
-    if (task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled') {
-      throw new Error(`Task ${taskId} is already ${task.status}`);
-    }
-
-    // Останавливаем агент фонового агента через abort()
-    task.agent.abort();
-
-    task.status = 'cancelled';
-    task.activity = '';
-    task.endTime = new Date();
-
-    // Отменяем ожидающие промисы через reject
-    const resolver = this.resolvers.get(taskId);
-    if (resolver) {
-      resolver.reject(new Error(`Task ${taskId} was cancelled`));
-      this.resolvers.delete(taskId);
-    }
-
-    this.notifyCallbacks(task);
-
-    logger.info('Background task cancelled', { taskId, name: task.name });
   }
 
   waitForTask(taskId: string, onProgress?: (task: BackgroundTask) => void): Promise<string> {
@@ -165,12 +129,6 @@ export class BackgroundTaskManager {
         return;
       }
 
-      if (task.status === 'cancelled') {
-        reject(new Error(`Task ${taskId} was cancelled`));
-        this.resolvers.delete(taskId);
-        return;
-      }
-
       const unsubscribe = this.onTaskUpdate((updatedTask) => {
         if (updatedTask.id !== taskId) return;
 
@@ -188,10 +146,6 @@ export class BackgroundTaskManager {
           unsubscribe();
         } else if (updatedTask.status === 'failed') {
           reject(new Error(updatedTask.error || 'Task failed'));
-          this.resolvers.delete(taskId);
-          unsubscribe();
-        } else if (updatedTask.status === 'cancelled') {
-          reject(new Error(`Task ${taskId} was cancelled`));
           this.resolvers.delete(taskId);
           unsubscribe();
         }
@@ -224,7 +178,7 @@ export class BackgroundTaskManager {
       `- Do NOT ask questions or give status updates`,
       `- Just do the task using read_file, write_file, execute_shell, list_directory`,
       `- Return the result as plain text, max 2-3 paragraphs`,
-      `- Working directory: ${backgroundTask.workingDir}`,
+      `- Working directory: ${process.cwd()}`,
       ``,
       `TASK: ${task}`,
     ].join('\n');
@@ -252,11 +206,6 @@ export class BackgroundTaskManager {
         }
       );
 
-      // Проверяем, что задача не была отменена во время выполнения (статус изменился)
-      if (backgroundTask.status !== 'running') {
-        return;
-      }
-
       backgroundTask.status = 'completed';
       backgroundTask.activity = '';
       backgroundTask.result = finalResult || 'Task completed';
@@ -276,27 +225,12 @@ export class BackgroundTaskManager {
 
       this.scheduleAutoCleanup(taskId);
     } catch (error) {
-      // Проверяем, что это ошибка отмены (AbortError)
-      if (error instanceof Error && error.name === 'AbortError') {
-        backgroundTask.status = 'cancelled';
-        backgroundTask.activity = '';
-        backgroundTask.error = 'Task was cancelled';
-      } else {
-        backgroundTask.status = 'failed';
-        backgroundTask.activity = '';
-        backgroundTask.error = error instanceof Error ? error.message : String(error);
-      }
+      backgroundTask.status = 'failed';
+      backgroundTask.activity = '';
+      backgroundTask.error = error instanceof Error ? error.message : String(error);
       backgroundTask.endTime = new Date();
 
       this.notifyCallbacks(backgroundTask);
-
-      // Если это не отмена и есть waiter - reject его
-      const resolver = this.resolvers.get(taskId);
-      if (resolver && backgroundTask.status === 'failed') {
-        resolver.reject(new Error(backgroundTask.error || 'Task failed'));
-        this.resolvers.delete(taskId);
-      }
-
       this.scheduleAutoCleanup(taskId);
     }
   }
@@ -304,7 +238,7 @@ export class BackgroundTaskManager {
   private scheduleAutoCleanup(taskId: string): void {
     setTimeout(() => {
       const task = this.tasks.get(taskId);
-      if (task && (task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled')) {
+      if (task && (task.status === 'completed' || task.status === 'failed')) {
         this.tasks.delete(taskId);
         this.resolvers.delete(taskId);
         this.notifyCallbacks({ ...task, status: task.status });
@@ -335,22 +269,18 @@ export class BackgroundTaskManager {
     const activeTasks = this.getActiveTasks();
     const completedTasks = tasks.filter(t => t.status === 'completed');
     const failedTasks = tasks.filter(t => t.status === 'failed');
-    const cancelledTasks = tasks.filter(t => t.status === 'cancelled');
 
-    let summary = `Background Tasks (${tasks.length} total, ${activeTasks.length} active, ${completedTasks.length} completed, ${failedTasks.length} failed, ${cancelledTasks.length} cancelled):\n`;
+    let summary = `Background Tasks (${tasks.length} total, ${activeTasks.length} active, ${completedTasks.length} completed, ${failedTasks.length} failed):\n`;
 
     tasks.forEach(task => {
-      const statusIcon = task.status === 'running' ? '>' : task.status === 'completed' ? '+' : task.status === 'cancelled' ? '-' : task.status === 'failed' ? 'x' : 'o';
+      const statusIcon = task.status === 'running' ? '>' : task.status === 'completed' ? '+' : task.status === 'failed' ? 'x' : 'o';
       const duration = task.startTime ? `${((task.endTime?.getTime() || Date.now()) - task.startTime.getTime()) / 1000}s` : '-';
-      summary += `  ${statusIcon} [${task.status.toUpperCase()}] ${task.name} (${task.description}) - Duration: ${duration}\n`;
+      summary += `  ${statusIcon} [${task.status}] ${task.name} (${task.description}) - Duration: ${duration}\n`;
       if (task.result && task.status === 'completed') {
         summary += `     Result: ${task.result.substring(0, 100)}${task.result.length > 100 ? '...' : ''}\n`;
       }
       if (task.error && task.status === 'failed') {
         summary += `     Error: ${task.error}\n`;
-      }
-      if (task.status === 'cancelled') {
-        summary += `     Task was cancelled\n`;
       }
     });
 
@@ -375,7 +305,7 @@ export class BackgroundTaskManager {
 
   clearCompletedTasks(): void {
     const completedTasks = Array.from(this.tasks.entries())
-      .filter(([_, task]) => task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled')
+      .filter(([_, task]) => task.status === 'completed' || task.status === 'failed')
       .map(([id]) => id);
 
     completedTasks.forEach((id) => {
