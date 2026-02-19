@@ -1,4 +1,5 @@
-import { Agent, AgentConfig, AgentMessage } from '../core/agent.js';
+import { Agent } from '../core/agent.js';
+import type { AgentConfig } from '../core/types.js';
 import { logger } from '../services/logger.js';
 
 export interface BackgroundTask {
@@ -251,8 +252,8 @@ export class BackgroundTaskManager {
         }
       );
 
-      // Проверяем, что задача не была отменена
-      if (backgroundTask.status === 'cancelled') {
+      // Проверяем, что задача не была отменена во время выполнения (статус изменился)
+      if (backgroundTask.status !== 'running') {
         return;
       }
 

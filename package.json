@@ -1,26 +1,48 @@
 {
-  "name": "tod",
-  "version": "1.0.0",
+  "name": "@todlabs/tod",
+  "version": "1.0.1",
   "description": "Autonomous AI agent with TUI",
   "main": "dist/index.js",
   "type": "module",
   "bin": {
     "tod": "./dist/index.js"
   },
+  "files": [
+    "dist/**/*",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "node build.cjs",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
-    "test": "npm run build && node --test test/*.test.mjs"
+    "test": "npm run build && node --test test/*.test.mjs",
+    "prepublishOnly": "npm run build && npm test"
   },
   "keywords": [
     "ai",
     "agent",
     "autonomous",
-    "tui"
+    "tui",
+    "cli",
+    "terminal",
+    "chat",
+    "llm",
+    "openai"
   ],
-  "author": "",
-  "license": "ISC",
+  "author": "todlabs",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/todlabs/tod.git"
+  },
+  "bugs": {
+    "url": "https://github.com/todlabs/tod/issues"
+  },
+  "homepage": "https://github.com/todlabs/tod#readme",
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",
     "dotenv": "^16.4.7",
