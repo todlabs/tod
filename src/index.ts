@@ -64,9 +64,9 @@ if (!process.stdin.isTTY) {
 }
 
 if (useNative) {
-  // Native Terminal Kit UI
-  const { runNativeApp } = await import('./ui-native/adapter.js');
-  await runNativeApp(agent, backgroundManager, hasMcpServers ? mcpManager : undefined);
+  // Blessed UI
+  const { runBlessedApp } = await import('./ui-blessed/adapter.js');
+  await runBlessedApp(agent, backgroundManager, hasMcpServers ? mcpManager : undefined);
 } else {
   // React Ink UI
   const React = await import('react');
