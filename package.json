@@ -1,6 +1,6 @@
 {
   "name": "@todlabs/tod",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "Autonomous AI agent with TUI",
   "main": "dist/index.js",
   "type": "module",
