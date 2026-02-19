@@ -1,8 +1,5 @@
 #!/usr/bin/env node
 
-import React from 'react';
-import { render } from 'ink';
-import App from './ui/App.js';
 import { Agent } from './agent/index.js';
 import { BackgroundTaskManager } from './agent/backgroundManager.js';
 import { McpManager } from './services/mcp-manager.js';
@@ -10,6 +7,8 @@ import { configService } from './services/config.js';
 import { logger } from './services/logger.js';
 import { setBackgroundManager, setMcpManager } from './tools/index.js';
 import { skillsManager } from './services/skills.js';
+
+const useNative = process.argv.includes('--native') || process.env.TOD_UI === 'native';
 
 try {
   configService.getConfig();
@@ -57,13 +56,27 @@ if (skills.length === 0) {
 }
 logger.info('Skills loaded', { count: skillsManager.listSkills().length });
 
-logger.info('Application initialized', { model: configService.getModel() });
+logger.info('Application initialized', { model: configService.getModel(), ui: useNative ? 'native' : 'ink' });
 
-if (process.stdin.isTTY) {
+if (!process.stdin.isTTY) {
+  console.error('Error: This application requires an interactive TTY.');
+  process.exit(1);
+}
+
+if (useNative) {
+  // Native Terminal Kit UI
+  const { runNativeApp } = await import('./ui-native/adapter.js');
+  await runNativeApp(agent, backgroundManager, hasMcpServers ? mcpManager : undefined);
+} else {
+  // React Ink UI
+  const React = await import('react');
+  const { render } = await import('ink');
+  const { default: App } = await import('./ui/App.js');
+  
   console.clear();
-
+  
   const { waitUntilExit } = render(
-    React.createElement(App, {
+    React.default.createElement(App, {
       agent,
       backgroundManager,
       mcpManager: hasMcpServers ? mcpManager : undefined,
@@ -71,13 +84,9 @@ if (process.stdin.isTTY) {
     })
   );
 
-  waitUntilExit().then(async () => {
-    await mcpManager.shutdown();
-    logger.info('Goodbye!');
-    console.log('\nGoodbye!');
-    process.exit(0);
-  });
-} else {
-  console.error('Error: This application requires an interactive TTY.');
-  process.exit(1);
+  await waitUntilExit();
+  await mcpManager.shutdown();
+  logger.info('Goodbye!');
+  console.log('\nGoodbye!');
+  process.exit(0);
 }
