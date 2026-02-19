@@ -15,13 +15,17 @@ export type BackgroundTaskResultHandler = (taskId: string, result: string) => vo
 export class Agent {
   private llm: LLMClient;
   private messages: MessageManager;
+  private messageManagers: Map<string, MessageManager> = new Map();
+  private mcpToolDescriptions?: string;
   private isProcessing = false;
   private backgroundTaskResultHandlers: BackgroundTaskResultHandler[] = [];
   private activeSkillContent: string | null = null;
 
   constructor(config: AgentConfig) {
     this.llm = new LLMClient(config);
+    const providerKey = (config as any).provider || 'default';
     this.messages = new MessageManager();
+    this.messageManagers.set(providerKey, this.messages);
     logger.info('Agent created');
   }
 
@@ -260,7 +264,7 @@ export class Agent {
   }
 
   reset(): void {
-    this.messages.reset();
+    for (const manager of this.messageManagers.values()) manager.reset();
     logger.info('Agent reset');
   }
 
@@ -270,10 +274,26 @@ export class Agent {
 
   updateConfig(config: AgentConfig): void {
     this.llm = new LLMClient(config);
-    logger.info('Agent config updated', { model: config.model, baseURL: config.baseURL });
+
+    const providerKey = (config as any).provider || 'default';
+    if (!this.messageManagers.has(providerKey)) {
+      const manager = new MessageManager(this.mcpToolDescriptions);
+      this.messageManagers.set(providerKey, manager);
+    }
+    this.messages = this.messageManagers.get(providerKey)!;
+
+    logger.info('Agent config updated', {
+      provider: providerKey,
+      model: config.model,
+      baseURL: config.baseURL,
+      isolatedContext: true,
+    });
   }
 
   setMcpToolDescriptions(descriptions: string): void {
-    this.messages.setMcpToolDescriptions(descriptions);
+    this.mcpToolDescriptions = descriptions;
+    for (const manager of this.messageManagers.values()) {
+      manager.setMcpToolDescriptions(descriptions);
+    }
   }
 }

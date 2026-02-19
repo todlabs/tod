@@ -15,6 +15,41 @@ export interface Provider {
 
 export const providers: Provider[] = [
   {
+    id: 'openai',
+    name: 'OpenAI',
+    baseURL: 'https://api.openai.com/v1',
+    defaultModel: 'gpt-4o-mini',
+    models: [
+      { id: 'gpt-5', name: 'GPT-5', description: 'Frontier reasoning', maxTokens: 16384 },
+      { id: 'gpt-5-mini', name: 'GPT-5 Mini', description: 'Fast & strong default', maxTokens: 16384 },
+      { id: 'gpt-4o', name: 'GPT-4o', description: 'Omni general model', maxTokens: 16384 },
+      { id: 'gpt-4o-mini', name: 'GPT-4o Mini', description: 'Cost-efficient', maxTokens: 16384 },
+    ],
+  },
+  {
+    id: 'anthropic',
+    name: 'Anthropic',
+    baseURL: 'https://api.anthropic.com/v1',
+    defaultModel: 'claude-3-5-sonnet-latest',
+    models: [
+      { id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5', description: 'Balanced coding/reasoning', maxTokens: 16384 },
+      { id: 'claude-3-5-sonnet-latest', name: 'Claude 3.5 Sonnet', description: 'Reliable coding assistant', maxTokens: 16384 },
+      { id: 'claude-3-5-haiku-latest', name: 'Claude 3.5 Haiku', description: 'Fast & lightweight', maxTokens: 16384 },
+    ],
+  },
+  {
+    id: 'openrouter',
+    name: 'OpenRouter',
+    baseURL: 'https://openrouter.ai/api/v1',
+    defaultModel: 'anthropic/claude-3.5-sonnet',
+    models: [
+      { id: 'anthropic/claude-3.5-sonnet', name: 'Claude 3.5 Sonnet', description: 'Anthropic via OpenRouter', maxTokens: 16384 },
+      { id: 'openai/gpt-4o-mini', name: 'GPT-4o Mini', description: 'OpenAI via OpenRouter', maxTokens: 16384 },
+      { id: 'google/gemini-2.0-flash-001', name: 'Gemini 2.0 Flash', description: 'Google via OpenRouter', maxTokens: 16384 },
+      { id: 'meta-llama/llama-3.3-70b-instruct', name: 'Llama 3.3 70B', description: 'Open-source strong baseline', maxTokens: 16384 },
+    ],
+  },
+  {
     id: 'nvidia',
     name: 'NVIDIA NIM',
     baseURL: 'https://integrate.api.nvidia.com/v1',
@@ -78,6 +113,9 @@ export function getModelInfo(providerId: string, modelId: string): ModelInfo | u
 }
 
 export function detectProvider(baseURL: string): Provider | undefined {
+  if (baseURL.includes('api.openai.com')) return getProvider('openai');
+  if (baseURL.includes('api.anthropic.com')) return getProvider('anthropic');
+  if (baseURL.includes('openrouter.ai')) return getProvider('openrouter');
   if (baseURL.includes('nvidia')) return getProvider('nvidia');
   if (baseURL.includes('fireworks')) return getProvider('fireworks');
   return undefined;
