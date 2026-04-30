@@ -15,8 +15,8 @@
   <a href="https://github.com/todlabs/tod/blob/main/LICENSE">
     <img src="https://img.shields.io/github/license/todlabs/tod?style=flat-square&color=green" alt="License">
   </a>
-  <a href="https://nodejs.org/">
-    <img src="https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen?style=flat-square&logo=node.js" alt="Node Version">
+  <a href="https://bun.sh/">
+    <img src="https://img.shields.io/badge/bun-%3E%3D1.0.0-brightgreen?style=flat-square&logo=bun" alt="Bun Version">
   </a>
   <a href="https://github.com/todlabs/tod/actions">
     <img src="https://img.shields.io/github/actions/workflow/status/todlabs/tod/ci.yml?style=flat-square&label=ci" alt="CI Status">
@@ -26,6 +26,7 @@
 <p align="center">
   <a href="#features">Features</a> •
   <a href="#installation">Installation</a> •
+  <a href="#first-run">First Run</a> •
   <a href="#usage">Usage</a> •
   <a href="#configuration">Configuration</a> •
   <a href="#commands">Commands</a> •
@@ -38,15 +39,13 @@
 
 - **Natural language commands** — Just describe what you want in plain English
 - **File @-mentions** — Reference files with `@filename` for context-aware responses
-- **Slash commands** — Quick access with `/providers`, `/models`, `/clear`, and more
+- **Slash commands** — Quick access with `/provider`, `/model`, `/clear`, and more
 - **Background tasks** — Execute long-running operations without blocking your workflow
-- **Multi-provider support** — Works with OpenAI, Anthropic, and other LLM providers
+- **Multi-provider support** — Works with OpenAI, Anthropic, Fireworks, OpenRouter, and more
 - **Terminal-native** — Built with React + Ink for a smooth TUI experience
-- **Alternative UIs** — Use `--native` for terminal-kit UI or `--blessed` for blessed UI
+- **Guided setup** — First launch walks you through provider and API key configuration
 
 ## Installation
-
-> Note: npm package coming soon. For now, build from source:
 
 ```bash
 # Clone
@@ -54,14 +53,24 @@ git clone https://github.com/todlabs/tod.git
 cd tod
 
 # Install dependencies
-npm install
+bun install
 
 # Build
-npm run build
+bun run build
 
 # Run
-node dist/index.js
+bun run start
 ```
+
+## First Run
+
+On first launch, TOD will detect that no API key is configured and automatically open the provider selection menu. Follow the prompts:
+
+1. **Select a provider** — Choose from Fireworks, OpenAI, Anthropic, OpenRouter, etc.
+2. **Enter your API key** — Paste your key (it's stored locally in `~/.tod/config.json`)
+3. **Select a model** — Pick from the provider's available models
+
+Once configured, you're ready to go. You can always change provider/model later with `/provider` or `/model`.
 
 ## Usage
 
@@ -79,56 +88,41 @@ Then just type what you need:
 > /clear
 ```
 
-## UI Options
-
-TOD supports multiple UI implementations:
-
-```bash
-# Default (React + Ink)
-tod
-
-# Native terminal-kit UI (lightweight, fast)
-tod --native
-
-# Blessed UI (classic terminal UI)
-tod --blessed
-```
-
-Or set via environment variable:
-
-```bash
-export TOD_UI=native  # or 'blessed', 'ink'
-tod
-```
-
 ## Configuration
 
 TOD stores config in `~/.tod/config.json`:
 
 ```json
 {
-  "provider": "openai",
-  "model": "gpt-4",
-  "apiKey": "your-api-key"
+  "activeProvider": "openai",
+  "providerConfigs": {
+    "openai": {
+      "apiKey": "sk-...",
+      "baseURL": "https://api.openai.com/v1",
+      "model": "gpt-4o-mini",
+      "maxTokens": 16384,
+      "temperature": 1
+    }
+  }
 }
 ```
 
-Or use the interactive menu: `/providers`
+Or use the interactive menus: `/provider` to change provider, `/model` to change model.
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `/providers` | Select LLM provider |
-| `/models` | Select model |
+| `/provider` | Select LLM provider & set API key |
+| `/model` | Select model for current provider |
 | `/thinking` | Toggle thinking display |
 | `/clear` | Clear conversation history |
 | `/compact` | Compress context |
-| `/tasks` | Show background tasks |
 | `/mcp` | Show active MCP servers |
-| `/skills` | List available skills |
-| `/skill-off` | Deactivate current skill |
+| `/help` | Show commands |
 | `/exit` | Exit TOD |
+
+> Aliases: `/providers` and `/models` also work.
 
 ## MCP (Model Context Protocol)
 
@@ -141,7 +135,7 @@ TOD supports MCP to connect to external tools and services. See documentation:
 
 ## Requirements
 
-- Node.js 18+
+- Bun 1.0+
 - API key for your chosen LLM provider
 
 ## License

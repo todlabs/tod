@@ -1,27 +1,52 @@
-import React from 'react';
-import { Box, Text } from 'ink';
-import MultilineInput from './MultilineInput.js';
+import React from "react";
+import { Box, Text, useStdout } from "ink";
+import MultilineInput from "./MultilineInput.js";
 
 interface InputAreaProps {
   value: string;
   onChange: (value: string) => void;
   onSubmit: (value: string) => void;
   isProcessing: boolean;
-  blockReturn?: boolean;
+  hasPending?: boolean;
+  needsSetup?: boolean;
 }
 
-export default function InputArea({ value, onChange, onSubmit, isProcessing, blockReturn = false }: InputAreaProps) {
+export default function InputArea({
+  value,
+  onChange,
+  onSubmit,
+  isProcessing,
+  hasPending = false,
+  needsSetup = false,
+}: InputAreaProps) {
+  const { stdout } = useStdout();
+  const cols = stdout?.columns ?? 80;
+  const line = "─".repeat(cols - 2);
+
+  const placeholder = needsSetup
+    ? "Use /providers to configure API key first..."
+    : isProcessing
+      ? hasPending
+        ? "Queued! Waiting for agent..."
+        : "Type next message, Enter to queue..."
+      : "Message...  ( / commands · @ files · ↩ + Enter newline )";
+
   return (
-    <Box borderStyle="single" borderColor="white" paddingX={1} marginTop={1} flexDirection="row">
-      <Text color="white">{'→ '}</Text>
-      <MultilineInput
-        value={value}
-        onChange={onChange}
-        onSubmit={onSubmit}
-        placeholder={isProcessing ? 'Processing...' : 'Plan, search, build anything  ( / commands · @ files )'}
-        isDisabled={isProcessing}
-        blockReturn={blockReturn}
-      />
+    <Box flexDirection="column" marginTop={1}>
+      <Text color="gray">{line}</Text>
+      <Box flexDirection="row">
+        <Text color={isProcessing ? "gray" : "white"}>
+          {isProcessing ? "↩ " : "❯ "}
+        </Text>
+        <MultilineInput
+          value={value}
+          onChange={onChange}
+          onSubmit={onSubmit}
+          placeholder={placeholder}
+          isDisabled={false}
+        />
+      </Box>
+      <Text color="gray">{line}</Text>
     </Box>
   );
 }

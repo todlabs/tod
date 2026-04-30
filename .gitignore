@@ -9,9 +9,6 @@ dist
 
 # Logs
 *.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
 
 # IDE
 .vscode
@@ -21,7 +18,15 @@ yarn-error.log*
 *.swo
 *~
 
-# Build scripts (only build.cjs is needed)
+# Node.js artifacts (using Bun only)
+package-lock.json
+.npmrc
+.nvmrc
+.node-version
+npm-debug.log
+
+# Build scripts (legacy)
+build.cjs
 build.bat
 build.mjs
 
@@ -32,3 +37,6 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.temp
+
+# TypeScript build script (not needed in dist)
+build.ts

@@ -1,18 +1,105 @@
-import type { AgentConfig, AgentMessage, ToolCallChunk, StreamChunk } from './types.js';
-import type { ChatCompletionTool } from 'openai/resources/chat/completions';
-import { LLMClient } from './llm-client.js';
-import { MessageManager } from './message-manager.js';
-import { tools, executeTool, isAsyncTool, formatToolCall, getMcpTools } from '../tools/index.js';
-import { logger } from '../services/logger.js';
+import type {
+  AgentConfig,
+  AgentMessage,
+  ToolCallChunk,
+  StreamChunk,
+} from "./types.js";
+import type { ChatCompletionTool } from "openai/resources/chat/completions";
+import { LLMClient } from "./llm-client.js";
+import { MessageManager } from "./message-manager.js";
+import {
+  tools,
+  executeTool,
+  isAsyncTool,
+  formatToolCall,
+  getMcpTools,
+} from "../tools/index.js";
+import { logger } from "../services/logger.js";
 
 const MAX_AGENT_ITERATIONS = 25;
+const MAX_TOOL_RETRIES = 2;
+const MAX_SAME_TOOL_CALLS = 3;
+const MAX_PROCESS_MESSAGE_RETRIES = 2;
+const ZOMBIE_GUARD_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+
+/**
+ * Determine if an error is transient and worth retrying.
+ * Reuses the same logic as LLMClient.isRetryableError.
+ *
+ * Retryable: network errors, 429 (rate limit), 500/502/503 (server errors).
+ * Not retryable: 400 (bad request), 401 (auth), and other 4xx client errors.
+ * Abort errors are never retryable.
+ */
+export function isRetryableError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    // Unknown error types are treated as potentially transient
+    return true;
+  }
+
+  // Never retry abort errors
+  if (error.name === "AbortError" || error.message === "Aborted") {
+    return false;
+  }
+
+  const apiError = error as any;
+  const status = apiError.status;
+
+  if (status) {
+    // Rate limit and server errors are retryable
+    if (status === 429 || status === 500 || status === 502 || status === 503) {
+      return true;
+    }
+    // Client errors (400, 401, 403, 404, etc.) are not retryable
+    if (status >= 400 && status < 500) {
+      return false;
+    }
+  }
+
+  // Check for common network error codes
+  const code = apiError.code;
+  if (
+    code === "ECONNRESET" ||
+    code === "ETIMEDOUT" ||
+    code === "ECONNREFUSED" ||
+    code === "ENOTFOUND" ||
+    code === "ENETUNREACH"
+  ) {
+    return true;
+  }
+
+  // Errors without a status code are likely network issues — retryable
+  return !status;
+}
+
+/**
+ * Sleep for the specified duration, with optional early abort via signal.
+ */
+function sleepWithAbort(
+  ms: number,
+  signal?: AbortSignal | null,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error("Aborted"));
+      return;
+    }
+
+    const timer = setTimeout(resolve, ms);
+
+    if (signal) {
+      const onAbort = () => {
+        clearTimeout(timer);
+        reject(new Error("Aborted"));
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+  });
+}
 
 export interface AgentProcessCallbacks {
   onChunk: (chunk: AgentMessage) => void;
   onToolCall: (toolName: string, args: unknown) => void;
 }
-
-export type BackgroundTaskResultHandler = (taskId: string, result: string) => void;
 
 export class Agent {
   private llm: LLMClient;
@@ -21,29 +108,14 @@ export class Agent {
   private mcpToolDescriptions?: string;
   private isProcessing = false;
   private abortController: AbortController | null = null;
-  private backgroundTaskResultHandlers: BackgroundTaskResultHandler[] = [];
-  private activeSkillContent: string | null = null;
+  private zombieGuardTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(config: AgentConfig) {
     this.llm = new LLMClient(config);
-    const providerKey = (config as any).provider || 'default';
+    const providerKey = (config as any).provider || "default";
     this.messages = new MessageManager();
     this.messageManagers.set(providerKey, this.messages);
-    logger.info('Agent created');
-  }
-
-  setActiveSkill(content: string | null): void {
-    this.activeSkillContent = content;
-    if (content) {
-      this.messages.setEphemeralContext('skill', `Active skill instructions:\n${content}`);
-      logger.info('Skill activated', { contentLength: content.length });
-    } else {
-      this.messages.removeEphemeralContext('skill');
-    }
-  }
-
-  getMessages(): AgentMessage[] {
-    return this.messages.getAgentMessages();
+    logger.info("Agent created");
   }
 
   isBusy(): boolean {
@@ -55,108 +127,282 @@ export class Agent {
       this.abortController.abort();
       this.abortController = null;
     }
+    this.clearZombieGuard();
+    this.isProcessing = false;
   }
 
-  onBackgroundTaskResult(handler: BackgroundTaskResultHandler): () => void {
-    this.backgroundTaskResultHandlers.push(handler);
-    return () => {
-      const index = this.backgroundTaskResultHandlers.indexOf(handler);
-      if (index > -1) {
-        this.backgroundTaskResultHandlers.splice(index, 1);
+  /**
+   * Force-unstick the agent. Sets isProcessing = false, aborts any in-flight
+   * operation, and cleans up stuck state. Useful if the agent gets into a bad
+   * state that abort() alone can't resolve.
+   */
+  forceUnstick(): void {
+    logger.warn("Force-unsticking agent", {
+      isProcessing: this.isProcessing,
+      hadAbortController: this.abortController !== null,
+      hadZombieGuard: this.zombieGuardTimer !== null,
+    });
+
+    if (this.abortController) {
+      this.abortController.abort();
+      this.abortController = null;
+    }
+
+    this.clearZombieGuard();
+    this.isProcessing = false;
+  }
+
+  private startZombieGuard(): void {
+    this.clearZombieGuard();
+
+    this.zombieGuardTimer = setTimeout(() => {
+      if (this.isProcessing) {
+        logger.error(
+          "Zombie guard fired — agent stuck for too long, force-releasing",
+          {
+            isProcessing: this.isProcessing,
+            hadAbortController: this.abortController !== null,
+          },
+        );
+
+        // Abort and reset
+        if (this.abortController) {
+          this.abortController.abort();
+          this.abortController = null;
+        }
+        this.isProcessing = false;
       }
-    };
+    }, ZOMBIE_GUARD_TIMEOUT_MS);
+
+    // Don't let the timer prevent process exit
+    if (this.zombieGuardTimer.unref) {
+      this.zombieGuardTimer.unref();
+    }
   }
 
-  async handleBackgroundTaskResult(taskId: string, result: string): Promise<void> {
-    logger.info('Agent received background task result', { taskId, resultLength: result.length });
-
-    // Truncate long results to keep context clean
-    const maxLen = 5000;
-    const truncated = result.length > maxLen
-      ? result.substring(0, maxLen) + `\n... (truncated, ${result.length} chars total)`
-      : result;
-
-    // Ephemeral — не засоряет историю, доступен при следующем LLM вызове
-    this.messages.setEphemeralContext(
-      `bg_result_${taskId}`,
-      `Background task ${taskId} completed:\n${truncated}`
-    );
-  }
-
-  updateBackgroundTasksContext(tasksSummary: string): void {
-    this.messages.setEphemeralContext('background_tasks', `Background Tasks Status:\n${tasksSummary}`);
-    logger.debug('Background tasks context updated');
+  private clearZombieGuard(): void {
+    if (this.zombieGuardTimer) {
+      clearTimeout(this.zombieGuardTimer);
+      this.zombieGuardTimer = null;
+    }
   }
 
   async processMessage(
     userMessage: string,
-    callbacks: AgentProcessCallbacks
+    callbacks: AgentProcessCallbacks,
   ): Promise<void> {
     if (this.isProcessing) {
-      throw new Error('Agent is already processing a message');
+      throw new Error("Agent is already processing a message");
     }
 
     this.isProcessing = true;
     this.abortController = new AbortController();
-    logger.info('Processing user message', { length: userMessage.length });
+    this.startZombieGuard();
+    logger.info("Processing user message", { length: userMessage.length });
 
-    try {
-      this.messages.addMessage('user', userMessage);
-      await this.runAgentLoop(callbacks);
-    } finally {
-      this.isProcessing = false;
-      this.abortController = null;
-      logger.debug('Message processing finished');
+    let lastError: Error | null = null;
+
+    for (let attempt = 0; attempt <= MAX_PROCESS_MESSAGE_RETRIES; attempt++) {
+      try {
+        // Only add the user message on the first attempt; on retries the
+        // message is already in history from the first attempt.
+        if (attempt === 0) {
+          this.messages.addMessage("user", userMessage);
+        }
+
+        await this.runAgentLoop(callbacks);
+
+        // Success — reset and return
+        this.isProcessing = false;
+        this.abortController = null;
+        this.clearZombieGuard();
+        logger.debug("Message processing finished");
+        return;
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+
+        // Check if the error is retryable
+        if (!isRetryableError(lastError)) {
+          logger.error("Non-retryable error in processMessage", {
+            error: lastError.message,
+            attempt,
+          });
+          break; // Don't retry — fall through to error reporting
+        }
+
+        if (attempt >= MAX_PROCESS_MESSAGE_RETRIES) {
+          logger.error("Max processMessage retries exceeded", {
+            maxRetries: MAX_PROCESS_MESSAGE_RETRIES,
+            error: lastError.message,
+          });
+          break; // Retries exhausted — fall through to error reporting
+        }
+
+        // Retry with backoff
+        const baseDelay = Math.pow(2, attempt) * 1000; // 1s, 2s, 4s
+        const jitter = Math.random() * 500; // 0–500ms jitter
+        const delay = baseDelay + jitter;
+
+        logger.info("Retrying processMessage after retryable error", {
+          attempt: attempt + 1,
+          maxRetries: MAX_PROCESS_MESSAGE_RETRIES,
+          delay: Math.round(delay),
+          error: lastError.message,
+        });
+
+        // Reset processing state for the retry, but keep the abort controller
+        // so the caller can still abort between retries.
+        this.isProcessing = true;
+        if (!this.abortController || this.abortController.signal.aborted) {
+          // If aborted between retries, don't continue
+          logger.info("Aborted between processMessage retries, stopping");
+          break;
+        }
+
+        try {
+          await sleepWithAbort(delay, this.abortController.signal);
+        } catch {
+          // Aborted during backoff sleep
+          break;
+        }
+
+        // Restart zombie guard for the new attempt
+        this.startZombieGuard();
+      }
     }
+
+    // Error handling — we only reach here if all attempts failed or a
+    // non-retryable error occurred.
+    this.isProcessing = false;
+    this.abortController = null;
+    this.clearZombieGuard();
+
+    const errorMsg = lastError?.message ?? "Unknown error";
+    logger.error("Agent loop error", { error: errorMsg });
+
+    // Add error to message history so the LLM can understand context
+    this.messages.addMessage("assistant", `[Error: ${errorMsg}]`);
+
+    // Notify the UI gracefully
+    callbacks.onChunk({
+      role: "assistant",
+      content: `An error occurred: ${errorMsg}`,
+    });
+
+    logger.debug("Message processing finished (with error)");
   }
 
   private async runAgentLoop(callbacks: AgentProcessCallbacks): Promise<void> {
     const allTools = [...tools, ...getMcpTools()];
 
+    // Track last tool calls for infinite loop detection
+    const recentToolCalls: Array<{ name: string; args: string }> = [];
+
     for (let iteration = 0; iteration < MAX_AGENT_ITERATIONS; iteration++) {
       const signal = this.abortController?.signal;
       if (signal?.aborted) break;
 
-      let assistantMessage = '';
+      let assistantMessage = "";
       const accumulatedToolCalls: Map<number, ToolCallChunk> = new Map();
 
-      for await (const chunk of this.llm.streamCompletion(
-        this.messages.getMessagesWithEphemeral(),
-        allTools,
-        signal
-      )) {
-        if (signal?.aborted) break;
+      // Allow one retry for mid-stream failures
+      let streamRetriesRemaining = 1;
 
-        if (chunk.thinking) {
-          callbacks.onChunk({
-            role: 'assistant',
-            content: chunk.thinking,
-            isThinking: true,
-          });
-        }
+      while (true) {
+        assistantMessage = "";
+        accumulatedToolCalls.clear();
 
-        if (chunk.content) {
-          assistantMessage += chunk.content;
-        }
+        try {
+          for await (const chunk of this.llm.streamCompletion(
+            this.messages.getMessagesWithEphemeral(),
+            allTools,
+            signal,
+          )) {
+            if (signal?.aborted) break;
 
-        for (const toolCall of chunk.toolCalls) {
-          if (!accumulatedToolCalls.has(toolCall.index)) {
-            accumulatedToolCalls.set(toolCall.index, {
-              index: toolCall.index,
-              id: toolCall.id,
-              function: { name: '', arguments: '' },
+            if (chunk.thinking) {
+              callbacks.onChunk({
+                role: "assistant",
+                content: chunk.thinking,
+                isThinking: true,
+              });
+            }
+
+            if (chunk.content) {
+              assistantMessage += chunk.content;
+            }
+
+            for (const toolCall of chunk.toolCalls) {
+              if (!accumulatedToolCalls.has(toolCall.index)) {
+                accumulatedToolCalls.set(toolCall.index, {
+                  index: toolCall.index,
+                  id: toolCall.id,
+                  function: { name: "", arguments: "" },
+                });
+              }
+              const accumulated = accumulatedToolCalls.get(toolCall.index)!;
+              accumulated.function.name += toolCall.function.name;
+              accumulated.function.arguments += toolCall.function.arguments;
+            }
+          }
+
+          // Stream completed successfully — exit the retry loop
+          break;
+        } catch (error) {
+          const errorMsg =
+            error instanceof Error ? error.message : String(error);
+          logger.error("Stream failed mid-way", { error: errorMsg });
+
+          // Check if the error is retryable and we have retries left
+          if (
+            streamRetriesRemaining > 0 &&
+            isRetryableError(error) &&
+            !signal?.aborted
+          ) {
+            streamRetriesRemaining--;
+            logger.info("Retrying stream iteration after mid-stream failure", {
+              iteration,
+              streamRetriesRemaining,
+              error: errorMsg,
+            });
+
+            // Small backoff before retry
+            const retryDelay = 1000 + Math.random() * 500;
+            try {
+              await sleepWithAbort(retryDelay, signal);
+            } catch {
+              // Aborted during backoff
+              break;
+            }
+
+            // Retry the same iteration
+            continue;
+          }
+
+          // No retries left or non-retryable error — save partial state and break
+
+          // Save any partial assistant message that was accumulated
+          if (assistantMessage) {
+            this.messages.addMessage("assistant", assistantMessage);
+            callbacks.onChunk({
+              role: "assistant",
+              content: assistantMessage,
             });
           }
-          const accumulated = accumulatedToolCalls.get(toolCall.index)!;
-          accumulated.function.name += toolCall.function.name;
-          accumulated.function.arguments += toolCall.function.arguments;
+
+          // Notify the UI about the stream error
+          callbacks.onChunk({
+            role: "assistant",
+            content: `[Stream error: ${errorMsg}]`,
+          });
+          break;
         }
       }
 
       if (assistantMessage) {
-        this.messages.addMessage('assistant', assistantMessage);
+        this.messages.addMessage("assistant", assistantMessage);
         callbacks.onChunk({
-          role: 'assistant',
+          role: "assistant",
           content: assistantMessage,
         });
       }
@@ -170,9 +416,9 @@ export class Agent {
         const id = tc.id || `call_${Date.now()}_${idx}`;
         let parsedArgs: Record<string, unknown>;
         try {
-          parsedArgs = JSON.parse(tc.function.arguments || '{}');
+          parsedArgs = JSON.parse(tc.function.arguments || "{}");
         } catch (error) {
-          logger.error('Failed to parse tool arguments', {
+          logger.error("Failed to parse tool arguments", {
             toolName: tc.function.name,
             arguments: tc.function.arguments,
             error: error instanceof Error ? error.message : String(error),
@@ -193,12 +439,12 @@ export class Agent {
       this.messages.addToolCall(
         toolCallsWithIds.map((tc) => ({
           id: tc.id,
-          type: 'function' as const,
+          type: "function" as const,
           function: {
             name: tc.function.name,
             arguments: tc.function.arguments,
           },
-        }))
+        })),
       );
 
       for (const toolCall of toolCallsWithIds) {
@@ -206,26 +452,123 @@ export class Agent {
 
         const toolName = toolCall.function.name;
         const toolArgs = toolCall.parsedArgs;
+        const argsKey = JSON.stringify(toolArgs);
+
+        // Infinite tool loop detection
+        const sameCallCount = recentToolCalls.filter(
+          (tc) => tc.name === toolName && tc.args === argsKey,
+        ).length;
+
+        if (sameCallCount >= MAX_SAME_TOOL_CALLS) {
+          logger.warn("Infinite tool loop detected", {
+            toolName,
+            args: argsKey,
+            count: sameCallCount,
+          });
+
+          const loopWarning = `Warning: The tool "${toolName}" was called ${MAX_SAME_TOOL_CALLS} times with the same arguments in a row. Breaking to prevent an infinite loop.`;
+
+          this.messages.addMessage("tool", loopWarning, {
+            tool_call_id: toolCall.id,
+          });
+
+          callbacks.onChunk({
+            role: "tool",
+            content: loopWarning,
+            toolName: formatToolCall(toolName, toolArgs),
+          });
+
+          // Break out of the tool execution loop, which will also end the agent loop
+          return;
+        }
+
+        // Track this tool call
+        recentToolCalls.push({ name: toolName, args: argsKey });
+        // Keep only the last MAX_SAME_TOOL_CALLS entries for detection
+        if (recentToolCalls.length > MAX_SAME_TOOL_CALLS * 2) {
+          recentToolCalls.splice(
+            0,
+            recentToolCalls.length - MAX_SAME_TOOL_CALLS * 2,
+          );
+        }
 
         callbacks.onToolCall(toolName, toolArgs);
 
-        let result: string;
+        let result: string = "";
         const toolResult = executeTool(toolName, toolArgs);
 
         if (toolResult instanceof Promise) {
-          logger.info('Waiting for async tool result', { toolName });
-          result = await toolResult;
-          logger.info('Async tool completed', { toolName, resultLength: result.length });
+          // Async tool with retry logic
+          let lastError: Error | null = null;
+          let succeeded = false;
+
+          for (let attempt = 0; attempt <= MAX_TOOL_RETRIES; attempt++) {
+            try {
+              if (attempt > 0) {
+                logger.info("Retrying async tool", {
+                  toolName,
+                  attempt,
+                });
+              }
+              result = await (attempt === 0
+                ? toolResult
+                : executeTool(toolName, toolArgs));
+              succeeded = true;
+              logger.info("Async tool completed", {
+                toolName,
+                resultLength: result.length,
+              });
+              break;
+            } catch (error) {
+              lastError =
+                error instanceof Error ? error : new Error(String(error));
+              logger.error("Async tool execution failed", {
+                toolName,
+                attempt,
+                error: lastError.message,
+              });
+            }
+          }
+
+          if (!succeeded) {
+            result = `[Tool error: ${toolName} failed after ${MAX_TOOL_RETRIES + 1} attempts. Last error: ${lastError?.message}]`;
+            logger.error("Async tool exhausted retries", {
+              toolName,
+              error: lastError?.message,
+            });
+          }
         } else {
-          result = toolResult;
+          // Sync tool — wrap in try-catch as well
+          try {
+            result = toolResult;
+          } catch (error) {
+            const errorMsg =
+              error instanceof Error ? error.message : String(error);
+            result = `[Tool error: ${toolName} failed. Error: ${errorMsg}]`;
+            logger.error("Sync tool execution failed", {
+              toolName,
+              error: errorMsg,
+            });
+          }
         }
 
-        this.messages.addMessage('tool', result, {
+        // Tool execution safety: detect "Error:" prefixed results from
+        // executeTool (which wraps errors as "Error: <message>")
+        if (result.startsWith("Error:")) {
+          logger.error("Tool returned an error result", {
+            toolName,
+            errorResult: result,
+          });
+          // Wrap it in a consistent format so the LLM knows the tool failed
+          result = `[Tool error: ${toolName} returned: ${result}]`;
+        }
+
+        this.messages.addMessage("tool", result, {
           tool_call_id: toolCall.id,
         });
 
         callbacks.onChunk({
-          role: 'tool',
+          role: "tool",
           content: result,
           toolName: formatToolCall(toolName, toolArgs),
         });
@@ -235,34 +578,46 @@ export class Agent {
     }
   }
 
-  async compactContext(): Promise<{ oldTokens: number; newTokens: number; summary: string }> {
-    logger.info('Compacting context');
+  async compactContext(): Promise<{
+    oldTokens: number;
+    newTokens: number;
+    summary: string;
+  }> {
+    logger.info("Compacting context");
 
     const conversationMessages = this.messages.getConversationMessages();
 
     if (conversationMessages.length === 0) {
-      return { oldTokens: 0, newTokens: 0, summary: 'No messages to compact' };
+      return { oldTokens: 0, newTokens: 0, summary: "No messages to compact" };
     }
 
     const oldTokens = this.messages.estimateTokens();
 
     const conversationText = conversationMessages
       .map((msg: any) => {
-        const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
-        if (msg.role === 'user') return `User: ${content}`;
-        if (msg.role === 'assistant') return `Assistant: ${content}`;
-        if (msg.role === 'tool') return `Tool (${msg.tool_call_id}): ${content}`;
-        if (msg.role === 'system') return `System: ${content}`;
+        const content =
+          typeof msg.content === "string"
+            ? msg.content
+            : JSON.stringify(msg.content);
+        if (msg.role === "user") return `User: ${content}`;
+        if (msg.role === "assistant") return `Assistant: ${content}`;
+        if (msg.role === "tool")
+          return `Tool (${msg.tool_call_id}): ${content}`;
+        if (msg.role === "system") return `System: ${content}`;
         return content;
       })
-      .join('\n\n');
+      .join("\n\n");
 
     const summary = await this.llm.createSummary(conversationText);
     const newTokens = Math.round(summary.length / 4);
 
     this.messages.compact(summary);
 
-    logger.info('Context compacted', { oldTokens, newTokens, saved: oldTokens - newTokens });
+    logger.info("Context compacted", {
+      oldTokens,
+      newTokens,
+      saved: oldTokens - newTokens,
+    });
 
     return { oldTokens, newTokens, summary };
   }
@@ -270,7 +625,7 @@ export class Agent {
   reset(): void {
     this.abort();
     for (const manager of this.messageManagers.values()) manager.reset();
-    logger.info('Agent reset');
+    logger.info("Agent reset");
   }
 
   getConfig(): AgentConfig {
@@ -280,14 +635,14 @@ export class Agent {
   updateConfig(config: AgentConfig): void {
     this.llm = new LLMClient(config);
 
-    const providerKey = (config as any).provider || 'default';
+    const providerKey = (config as any).provider || "default";
     if (!this.messageManagers.has(providerKey)) {
       const manager = new MessageManager(this.mcpToolDescriptions);
       this.messageManagers.set(providerKey, manager);
     }
     this.messages = this.messageManagers.get(providerKey)!;
 
-    logger.info('Agent config updated', {
+    logger.info("Agent config updated", {
       provider: providerKey,
       model: config.model,
       baseURL: config.baseURL,

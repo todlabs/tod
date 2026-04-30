@@ -1,36 +1,23 @@
-import React, { useState, useEffect } from 'react';
-import { Text } from 'ink';
+import React, { useState, useEffect } from "react";
+import { Text } from "ink";
 
 interface WorkingIndicatorProps {
   status?: string;
 }
 
 export default function WorkingIndicator({ status }: WorkingIndicatorProps) {
-  const [diamondIndex, setDiamondIndex] = useState(0);
-  const [dotsIndex, setDotsIndex] = useState(0);
-  
-  const diamonds = ['◆', '◇'];
-  const dotPatterns = ['...', '..', '.'];
+  const [frame, setFrame] = useState(0);
+
+  const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
   useEffect(() => {
-    const diamondInterval = setInterval(() => {
-      setDiamondIndex((prev) => (prev + 1) % diamonds.length);
-    }, 500); // Меняется каждые 500ms
-
-    return () => clearInterval(diamondInterval);
-  }, []);
-
-  useEffect(() => {
-    const dotsInterval = setInterval(() => {
-      setDotsIndex((prev) => (prev + 1) % dotPatterns.length);
-    }, 400); // Меняется каждые 400ms
-
-    return () => clearInterval(dotsInterval);
+    const iv = setInterval(() => setFrame((f) => (f + 1) % frames.length), 80);
+    return () => clearInterval(iv);
   }, []);
 
   return (
-    <Text color="cyan">
-      {diamonds[diamondIndex]} Working{dotPatterns[dotsIndex]}
+    <Text color="white">
+      {frames[frame]} {status || "working"}
     </Text>
   );
 }

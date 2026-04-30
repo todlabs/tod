@@ -1,21 +1,26 @@
-import React, { useState, useEffect } from 'react';
-import { Box, Text, useInput } from 'ink';
-import { readdirSync } from 'fs';
-import { join } from 'path';
-import { Agent, type AgentMessage } from '../agent/index.js';
-import { BackgroundTaskManager, type BackgroundTask } from '../agent/backgroundManager.js';
-import { configService } from '../services/config.js';
-import { providers, getProvider, type Provider, type ModelInfo } from '../services/providers.js';
-import type { McpManager } from '../services/mcp-manager.js';
-import { logger } from '../services/logger.js';
-import Header from './components/Header.js';
-import MessageList from './components/MessageList.js';
-import InputArea from './components/InputArea.js';
-import StatusBar from './components/StatusBar.js';
-import { useMessageProcessing } from './hooks/useMessageProcessing.js';
-import { executeCommand, commands, getCommandSuggestions } from './commands.js';
-import { skillsManager } from '../services/skills.js';
-import WorkingIndicator from './WorkingIndicator.js';
+import React, { useState, useEffect } from "react";
+import { Box, Text, useInput } from "ink";
+import { readdirSync } from "fs";
+import { join } from "path";
+import { Agent, type AgentMessage } from "../agent/index.js";
+import { configService } from "../services/config.js";
+import {
+  providers,
+  getProvider,
+  getModelInfo,
+  fetchModelsFromAPI,
+  type Provider,
+  type ModelInfo,
+} from "../services/providers.js";
+import type { McpManager } from "../services/mcp-manager.js";
+import { logger } from "../services/logger.js";
+import Header from "./components/Header.js";
+import MessageList from "./components/MessageList.js";
+import InputArea from "./components/InputArea.js";
+import StatusBar from "./components/StatusBar.js";
+import { useMessageProcessing } from "./hooks/useMessageProcessing.js";
+import { commands, getCommandSuggestions, matchCommand } from "./commands.js";
+import WorkingIndicator from "./WorkingIndicator.js";
 
 function setTitle(title: string) {
   process.stdout.write(`\x1b]0;${title}\x07`);
@@ -23,195 +28,231 @@ function setTitle(title: string) {
 
 interface AppProps {
   agent: Agent;
-  backgroundManager: BackgroundTaskManager;
   mcpManager?: McpManager;
   version: string;
 }
 
-type SuggestionItem =
-  | { type: 'command'; name: string; description: string }
-  | { type: 'file'; path: string; isDir: boolean; label: string };
+type SuggestionItem = {
+  type: "command" | "file";
+  name?: string;
+  description?: string;
+  path?: string;
+  isDir?: boolean;
+  label?: string;
+};
 
-// --- Interactive menu types ---
 type MenuMode =
-  | null
-  | { type: 'provider-select' }
-  | { type: 'provider-apikey'; provider: Provider }
-  | { type: 'model-select'; provider: Provider };
+  | { type: "provider-select" }
+  | { type: "provider-apikey"; provider: Provider }
+  | { type: "model-select"; provider: Provider };
 
-const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', '.next', '__pycache__', '.cache', 'coverage', 'build']);
+const SKIP_DIRS = new Set([
+  "node_modules",
+  ".git",
+  "dist",
+  ".next",
+  "__pycache__",
+  ".cache",
+  "coverage",
+  "build",
+]);
 
-function searchRecursive(query: string, dir: string, depth: number, results: SuggestionItem[]): void {
-  if (depth > 4 || results.length >= 8) return;
+function searchRecursive(
+  query: string,
+  dir: string,
+  depth: number,
+): SuggestionItem[] {
+  if (depth > 3) return [];
+  const results: SuggestionItem[] = [];
+  const lowerQuery = query.toLowerCase();
   try {
     const items = readdirSync(dir, { withFileTypes: true });
     for (const item of items) {
-      if (results.length >= 8) break;
-      if (item.isDirectory() && SKIP_DIRS.has(item.name)) continue;
-      const fullPath = dir === '.' ? item.name : `${dir}/${item.name}`;
-      if (item.name.toLowerCase().includes(query.toLowerCase())) {
-        const isDir = item.isDirectory();
-        results.push({
-          type: 'file' as const,
-          path: isDir ? fullPath + '/' : fullPath,
-          isDir,
-          label: isDir ? fullPath + '/' : fullPath,
-        });
-      }
+      if (SKIP_DIRS.has(item.name)) continue;
+      const fullPath = dir === "." ? item.name : `${dir}/${item.name}`;
       if (item.isDirectory()) {
-        searchRecursive(query, fullPath, depth + 1, results);
+        if (item.name.toLowerCase().includes(lowerQuery)) {
+          results.push({
+            type: "file",
+            path: fullPath + "/",
+            isDir: true,
+            label: fullPath + "/",
+          });
+        }
+        if (depth < 2)
+          results.push(
+            ...searchRecursive(query, join(dir, item.name), depth + 1),
+          );
+      } else if (item.name.toLowerCase().includes(lowerQuery)) {
+        results.push({
+          type: "file",
+          path: fullPath,
+          isDir: false,
+          label: fullPath,
+        });
       }
+      if (results.length >= 20) break;
     }
-  } catch {}
-}
-
-function getFileSuggestions(query: string): SuggestionItem[] {
-  if (query.includes('/')) {
-    try {
-      const parts = query.split('/');
-      const prefix = parts[parts.length - 1].toLowerCase();
-      const dir = parts.slice(0, -1).join('/') || '.';
-      const items = readdirSync(dir, { withFileTypes: true });
-      return items
-        .filter(item => item.name.toLowerCase().startsWith(prefix))
-        .slice(0, 8)
-        .map(item => {
-          const fullPath = dir === '.' ? item.name : `${dir}/${item.name}`;
-          const isDir = item.isDirectory();
-          return { type: 'file' as const, path: isDir ? fullPath + '/' : fullPath, isDir, label: isDir ? fullPath + '/' : fullPath };
-        });
-    } catch {
-      return [];
-    }
+  } catch {
+    /* ignore */
   }
-
-  if (query === '') {
-    try {
-      const items = readdirSync('.', { withFileTypes: true });
-      return items
-        .filter(item => !SKIP_DIRS.has(item.name))
-        .slice(0, 8)
-        .map(item => {
-          const isDir = item.isDirectory();
-          return { type: 'file' as const, path: isDir ? item.name + '/' : item.name, isDir, label: isDir ? item.name + '/' : item.name };
-        });
-    } catch {
-      return [];
-    }
-  }
-
-  const results: SuggestionItem[] = [];
-  searchRecursive(query, '.', 0, results);
   return results;
 }
 
-function getAtMention(input: string): { query: string; atIndex: number } | null {
-  const match = input.match(/@([^\s]*)$/);
+function getFileSuggestions(query: string): SuggestionItem[] {
+  if (!query) return searchRecursive(".", ".", 0);
+  const parts = query.split("/");
+  const prefix = parts.length > 1 ? parts.slice(0, -1).join("/") : ".";
+  const dir = prefix === "" ? "." : prefix;
+  const filePart = parts[parts.length - 1].toLowerCase();
+  try {
+    const items = readdirSync(dir, { withFileTypes: true });
+    const results: SuggestionItem[] = [];
+    for (const item of items) {
+      if (SKIP_DIRS.has(item.name)) continue;
+      if (!item.name.toLowerCase().includes(filePart)) continue;
+      const fullPath = dir === "." ? item.name : `${dir}/${item.name}`;
+      const isDir = item.isDirectory();
+      results.push({ type: "file", path: fullPath, isDir, label: fullPath });
+    }
+    return results.slice(0, 15);
+  } catch {
+    return [];
+  }
+}
+
+function getAtMention(
+  input: string,
+): { query: string; atIndex: number } | null {
+  const match = input.match(/@(\S*)$/);
   if (!match) return null;
   return { query: match[1], atIndex: match.index! };
 }
 
-function applyFileSuggestion(input: string, selectedPath: string): string {
-  const atIndex = input.lastIndexOf('@');
-  if (atIndex === -1) return input;
+function applyFileSuggestion(input: string, filePath: string): string {
+  const atIndex = input.lastIndexOf("@");
   const before = input.slice(0, atIndex);
-  const rest = input.slice(atIndex);
-  const replaced = rest.replace(/@[^\s]*/, `@${selectedPath}`);
-  return before + replaced;
+  const rest = input.slice(atIndex).replace(/@\S*/, "");
+  const replaced = `${before}@${filePath} ${rest.trim()}`;
+  return replaced;
 }
 
-// ========== Interactive Provider/Model Menu ==========
-
-function ProviderMenu({ menu, selectedIndex, apikeyInput }: {
-  menu: MenuMode;
+function ProviderMenu({
+  menu,
+  selectedIndex,
+  apikeyInput,
+  dynamicModels,
+}: {
+  menu: MenuMode | null;
   selectedIndex: number;
   apikeyInput: string;
+  dynamicModels: ModelInfo[] | null;
 }) {
   if (!menu) return null;
 
-  if (menu.type === 'provider-select') {
-    const currentProvider = configService.getProvider();
+  if (menu.type === "provider-select") {
+    const currentProvider = configService.getProvider() || "fireworks";
     return (
-      <Box flexDirection="column" marginTop={1} borderStyle="round" borderColor="cyan" paddingX={2} paddingY={1}>
-        <Text bold color="cyan">  Select Provider</Text>
-        <Text color="gray" dimColor>  ─────────────────────</Text>
+      <Box flexDirection="column" marginTop={1}>
+        <Text color="white">Provider:</Text>
         {providers.map((p, idx) => {
-          const isSelected = idx === selectedIndex;
+          const sel = idx === selectedIndex;
           const isCurrent = p.id === currentProvider;
           return (
             <Box key={p.id}>
-              <Text color={isSelected ? 'black' : 'cyan'} backgroundColor={isSelected ? 'cyan' : undefined}>
-                {isSelected ? ' > ' : '   '}
-              </Text>
-              <Text bold={isSelected} color={isSelected ? 'black' : 'white'} backgroundColor={isSelected ? 'cyan' : undefined}>
-                {p.name.padEnd(16)}
-              </Text>
-              <Text color={isSelected ? 'black' : 'gray'} backgroundColor={isSelected ? 'cyan' : undefined} dimColor={!isSelected}>
-                {' '}{p.baseURL}
-              </Text>
+              {sel ? (
+                <Text backgroundColor="white" color="black" bold>
+                  {p.name}
+                </Text>
+              ) : (
+                <Text color="gray">{p.name}</Text>
+              )}
               {isCurrent && (
-                <Text color={isSelected ? 'black' : 'green'} backgroundColor={isSelected ? 'cyan' : undefined}>
-                  {' '} current
+                <Text color="gray" dimColor>
+                  {" "}
+                  current
                 </Text>
               )}
             </Box>
           );
         })}
-        <Text color="gray" dimColor>{'\n'}  ↑↓ navigate  Enter select  Esc cancel</Text>
+        <Text color="gray" dimColor>
+          {" "}
+          ↑↓ select Enter confirm Esc cancel
+        </Text>
       </Box>
     );
   }
 
-  if (menu.type === 'provider-apikey') {
-    const keyPreview = configService.getProviderKey(menu.provider.id) || '';
-    const hasKey = keyPreview && keyPreview.length > 3;
+  if (menu.type === "provider-apikey") {
+    const keyPreview =
+      apikeyInput.length > 0
+        ? "*".repeat(Math.min(apikeyInput.length, 20))
+        : "";
+    const hasKey = !!configService.getProviderKey(menu.provider.id);
     return (
-      <Box flexDirection="column" marginTop={1} borderStyle="round" borderColor="cyan" paddingX={2} paddingY={1}>
-        <Text bold color="cyan">  API Key for {menu.provider.name}</Text>
-        <Text color="gray" dimColor>  ─────────────────────</Text>
+      <Box flexDirection="column" marginTop={1}>
+        <Text color="white">{menu.provider.name} — API Key</Text>
         {hasKey && (
-          <Text color="gray">  Current: {keyPreview.slice(0, 10)}...{keyPreview.slice(-4)}</Text>
+          <Text color="gray" dimColor>
+            Key already set — Enter to keep, Esc to skip
+          </Text>
         )}
-        <Box marginTop={1}>
-          <Text color="cyan">  Key: </Text>
-          <Text>{apikeyInput || ''}</Text>
-          <Text color="gray">█</Text>
+        <Box>
+          <Text color="gray">Key: </Text>
+          <Text color="white">{keyPreview || "(empty)"}</Text>
+          <Text inverse> </Text>
         </Box>
-        <Text color="gray" dimColor>{'\n'}  Enter confirm  Esc skip (keep current)</Text>
+        <Text color="gray" dimColor>
+          {" "}
+          Enter confirm Esc skip
+        </Text>
       </Box>
     );
   }
 
-  if (menu.type === 'model-select') {
+  if (menu.type === "model-select") {
     const currentModel = configService.getModel();
-    const models = menu.provider.models;
+    const models = dynamicModels || menu.provider.models;
     return (
-      <Box flexDirection="column" marginTop={1} borderStyle="round" borderColor="cyan" paddingX={2} paddingY={1}>
-        <Text bold color="cyan">  Select Model — {menu.provider.name}</Text>
-        <Text color="gray" dimColor>  ─────────────────────</Text>
-        {models.map((m, idx) => {
-          const isSelected = idx === selectedIndex;
-          const isCurrent = m.id === currentModel;
-          return (
-            <Box key={m.id}>
-              <Text color={isSelected ? 'black' : 'cyan'} backgroundColor={isSelected ? 'cyan' : undefined}>
-                {isSelected ? ' > ' : '   '}
-              </Text>
-              <Text bold={isSelected} color={isSelected ? 'black' : 'white'} backgroundColor={isSelected ? 'cyan' : undefined}>
-                {m.name.padEnd(24)}
-              </Text>
-              <Text color={isSelected ? 'black' : 'gray'} backgroundColor={isSelected ? 'cyan' : undefined} dimColor={!isSelected}>
-                {' '}{m.description}
-              </Text>
-              {isCurrent && (
-                <Text color={isSelected ? 'black' : 'green'} backgroundColor={isSelected ? 'cyan' : undefined}>
-                  {' '} current
+      <Box flexDirection="column" marginTop={1}>
+        <Text color="white">{menu.provider.name} — Model:</Text>
+        {models.length === 0 ? (
+          <Text color="gray" dimColor>
+            {" "}
+            Fetching models...
+          </Text>
+        ) : (
+          models.map((m, idx) => {
+            const sel = idx === selectedIndex;
+            const isCurrent = m.id === currentModel;
+            return (
+              <Box key={m.id}>
+                {sel ? (
+                  <Text backgroundColor="white" color="black" bold>
+                    {m.name}
+                  </Text>
+                ) : (
+                  <Text color="gray">{m.name}</Text>
+                )}
+                <Text color="gray" dimColor>
+                  {" "}
+                  — {m.description}
                 </Text>
-              )}
-            </Box>
-          );
-        })}
-        <Text color="gray" dimColor>{'\n'}  ↑↓ navigate  Enter select  Esc cancel</Text>
+                {isCurrent && (
+                  <Text color="gray" dimColor>
+                    {" "}
+                    current
+                  </Text>
+                )}
+              </Box>
+            );
+          })
+        )}
+        <Text color="gray" dimColor>
+          {" "}
+          ↑↓ select Enter confirm Esc cancel
+        </Text>
       </Box>
     );
   }
@@ -219,182 +260,270 @@ function ProviderMenu({ menu, selectedIndex, apikeyInput }: {
   return null;
 }
 
-// ========== Main App ==========
+// --- Compact suggestion list ---
+function SuggestionBar({
+  suggestions,
+  selectedIndex,
+  onSelect,
+  onExecute,
+}: {
+  suggestions: SuggestionItem[];
+  selectedIndex: number;
+  onSelect: (idx: number) => void;
+  onExecute: (idx: number) => void;
+}) {
+  const isCmd = suggestions[0]?.type === "command";
 
-export default function App({ agent, backgroundManager, mcpManager, version }: AppProps) {
-  const [input, setInput] = useState('');
+  if (isCmd) {
+    return (
+      <Box flexDirection="column" marginTop={1}>
+        {suggestions.map((item, idx) => {
+          const sel = idx === selectedIndex;
+          return (
+            <Box key={idx}>
+              {sel ? (
+                <Text backgroundColor="white" color="black" bold>
+                  {item.name}
+                </Text>
+              ) : (
+                <Text color="gray">{item.name}</Text>
+              )}
+              <Text color="gray" dimColor>
+                {" "}
+                — {item.description}
+              </Text>
+            </Box>
+          );
+        })}
+        <Text color="gray" dimColor>
+          {" "}
+          ↑↓ select Enter run Tab fill Esc close
+        </Text>
+      </Box>
+    );
+  }
+
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      {suggestions.slice(0, 8).map((item, idx) => {
+        const sel = idx === selectedIndex;
+        return (
+          <Box key={idx}>
+            <Text
+              color={sel ? "black" : item.isDir ? "yellow" : "gray"}
+              backgroundColor={sel ? "white" : undefined}
+            >
+              {sel ? " → " : "   "}
+              {item.isDir ? "▸ " : "  "}
+              {item.label}
+            </Text>
+          </Box>
+        );
+      })}
+      <Text color="gray" dimColor>
+        {" "}
+        ↑↓ select Tab/Enter fill Esc close
+      </Text>
+    </Box>
+  );
+}
+
+function App({ agent, mcpManager, version }: AppProps) {
+  const [input, setInput] = useState("");
   const [showThinking, setShowThinking] = useState(true);
   const [suggestions, setSuggestions] = useState<SuggestionItem[]>([]);
   const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(-1);
-  const [tokensUsed, setTokensUsed] = useState(0);
-  const [backgroundTasks, setBackgroundTasks] = useState<BackgroundTask[]>([]);
-  const [currentDir, setCurrentDir] = useState('');
+  const [currentDir, setCurrentDir] = useState(process.cwd());
 
-  // Interactive menu state
-  const [menu, setMenu] = useState<MenuMode>(null);
+  // Setup state: detect if provider needs configuration
+  const [needsSetup, setNeedsSetup] = useState(() => {
+    const apiKey = configService.getApiKey();
+    return !apiKey || apiKey.trim() === "";
+  });
+
+  // Menu state
+  const [menu, setMenu] = useState<MenuMode | null>(null);
   const [menuIndex, setMenuIndex] = useState(0);
-  const [apikeyInput, setApikeyInput] = useState('');
+  const [apikeyInput, setApikeyInput] = useState("");
+  const [dynamicModels, setDynamicModels] = useState<ModelInfo[] | null>(null); // null = not fetched yet
 
   const {
     messages,
     currentThinking,
     isProcessing,
+    pendingCount,
     processMessage,
     stopProcessing,
     resetMessages,
     addMessage,
   } = useMessageProcessing(agent);
 
+  const totalTokens =
+    messages.reduce((sum, m) => sum + (m.content?.length || 0), 0) / 4;
+
+  // Auto-open provider menu on first launch without config
   useEffect(() => {
-    setCurrentDir(process.cwd());
-    setTitle('TOD');
-    return () => setTitle('TOD');
+    if (needsSetup) {
+      addSystemMessage(
+        "Welcome to TOD! No API key configured.\nUse /providers to select a provider and set your API key.",
+      );
+      openProviderMenu();
+    }
   }, []);
 
+  // Update CWD periodically
   useEffect(() => {
-    const totalTokens = messages.reduce((acc, msg) => acc + msg.content.length, 0);
-    setTokensUsed(Math.round(totalTokens / 4));
-  }, [messages]);
-
-  useEffect(() => {
-    if (isProcessing) {
-      const lastUser = [...messages].reverse().find(m => m.role === 'user');
-      const preview = lastUser
-        ? lastUser.content.slice(0, 40).replace(/\n/g, ' ')
-        : 'thinking';
-      setTitle(`TOD ◆ ${preview}`);
-    } else {
-      const lastUser = [...messages].reverse().find(m => m.role === 'user');
-      if (lastUser) {
-        const preview = lastUser.content.slice(0, 50).replace(/\n/g, ' ');
-        setTitle(`TOD — ${preview}`);
-      } else {
-        setTitle('TOD');
+    const iv = setInterval(() => {
+      try {
+        setCurrentDir(process.cwd());
+      } catch {
+        /* */
       }
-    }
-  }, [isProcessing, messages]);
+    }, 5000);
+    return () => clearInterval(iv);
+  }, []);
 
+  // Title
+  useEffect(() => {
+    const modelName =
+      configService.getModel().split("/").pop() || configService.getModel();
+    setTitle(`TOD ${version} · ${modelName}`);
+  }, [version]);
+
+  // Suggestions
   useEffect(() => {
     setSelectedSuggestionIndex(-1);
-
     if (menu) {
       setSuggestions([]);
       return;
     }
-
-    if (!input.startsWith('/') && !getAtMention(input)) {
+    if (!input.startsWith("/") && !getAtMention(input)) {
       setSuggestions([]);
       return;
     }
 
     const timer = setTimeout(() => {
-      if (input.startsWith('/')) {
+      if (input.startsWith("/")) {
         const cmds = getCommandSuggestions(input);
-        setSuggestions(cmds.map(c => ({ type: 'command', name: c.name, description: c.description })));
-        return;
+        setSuggestions(
+          cmds.map((c) => ({
+            type: "command",
+            name: c.name,
+            description: c.description,
+          })),
+        );
+      } else {
+        const mention = getAtMention(input);
+        if (mention) setSuggestions(getFileSuggestions(mention.query));
       }
-      const mention = getAtMention(input);
-      if (mention) {
-        setSuggestions(getFileSuggestions(mention.query));
-      }
-    }, 150);
+    }, 80);
 
     return () => clearTimeout(timer);
   }, [input, menu]);
 
-  useEffect(() => {
-    const unsubscribe = backgroundManager.onTaskResult((taskId, result, task) => {
-      // Inject result into agent context (ephemeral, truncated)
-      agent.handleBackgroundTaskResult(taskId, result);
-      agent.updateBackgroundTasksContext(backgroundManager.getTasksSummary());
-
-      // Short UI notification
-      addMessage({
-        role: 'assistant',
-        content: `[${taskId}] "${task.name}" done`,
-      });
-    });
-    return () => { unsubscribe && unsubscribe(); };
-  }, [backgroundManager, agent, addMessage]);
-
-  useEffect(() => {
-    const unsubscribe = backgroundManager.onTaskUpdate(() => {
-      setBackgroundTasks(backgroundManager.getAllTasks());
-    });
-    return () => { unsubscribe && unsubscribe(); };
-  }, [backgroundManager]);
-
-  const hasSuggestionSelected = selectedSuggestionIndex >= 0;
+  // Background task events
   const hasSuggestions = suggestions.length > 0;
-
-  function completeSuggestion(idx: number) {
+  function fillSuggestion(idx: number) {
     const item = suggestions[idx];
     if (!item) return;
-    if (item.type === 'command') {
-      setInput(item.name + ' ');
+    if (item.type === "command") {
+      setInput(item.name + " ");
     } else {
-      setInput(applyFileSuggestion(input, item.path));
+      setInput(applyFileSuggestion(input, item.path!));
     }
     setSuggestions([]);
     setSelectedSuggestionIndex(-1);
   }
 
-  // --- Menu: select provider -> apikey -> model -> apply ---
+  // Execute suggestion directly (Enter on selected command)
+  function executeSuggestion(idx: number) {
+    const item = suggestions[idx];
+    if (!item) return;
+    if (item.type === "command") {
+      // Run the command directly
+      setSuggestions([]);
+      setSelectedSuggestionIndex(-1);
+      setInput("");
+      handleCommand(item.name!);
+    } else {
+      // File: fill input
+      setInput(applyFileSuggestion(input, item.path!));
+      setSuggestions([]);
+      setSelectedSuggestionIndex(-1);
+    }
+  }
+
+  // --- Menu helpers ---
   function openProviderMenu() {
-    setMenu({ type: 'provider-select' });
+    setMenu({ type: "provider-select" });
     setMenuIndex(0);
-    setApikeyInput('');
+    setApikeyInput("");
   }
 
   function selectProvider(provider: Provider) {
-    setMenu({ type: 'provider-apikey', provider });
-    setApikeyInput('');
+    setMenu({ type: "provider-apikey", provider });
+    setApikeyInput("");
   }
 
-  function confirmApiKey(provider: Provider) {
-    const key = apikeyInput.trim() || undefined;
-    configService.setProvider(provider.id, key);
-    setMenu({ type: 'model-select', provider });
+  function openModelMenu(provider: Provider) {
+    setMenu({ type: "model-select", provider });
     setMenuIndex(0);
+    setDynamicModels(null);
+    // Fetch models from API in background
+    const apiKey =
+      configService.getProviderKey(provider.id) || configService.getApiKey();
+    if (apiKey) {
+      fetchModelsFromAPI(provider.baseURL, apiKey).then((models) => {
+        setDynamicModels(models.length > 0 ? models : null);
+      });
+    }
   }
 
   function selectModel(provider: Provider, model: ModelInfo) {
     configService.setModel(model.id);
+    // Update maxTokens from model info
+    if (model.maxTokens) {
+      const cfg = configService.getConfig();
+      cfg.maxTokens = model.maxTokens;
+    }
     const newConfig = configService.getConfig();
     agent.updateConfig(newConfig);
     setMenu(null);
-    addSystemMessage(`${provider.name} → ${model.name}`);
+    setDynamicModels(null);
+    setNeedsSetup(false);
+    const ctx = model.contextLength
+      ? ` (${Math.round(model.contextLength / 1000)}K ctx)`
+      : "";
+    addSystemMessage(`${provider.name} → ${model.name}${ctx}`);
   }
 
   function closeMenu() {
     setMenu(null);
     setMenuIndex(0);
-    setApikeyInput('');
+    setApikeyInput("");
+    setDynamicModels(null);
   }
 
-  // --- Menu keyboard handling ---
+  // --- Keyboard ---
   useInput((inputChar, key) => {
-    // Menu mode takes priority
     if (menu) {
       if (key.escape) {
-        // Esc in apikey -> skip to model select
-        if (menu.type === 'provider-apikey') {
+        if (menu.type === "provider-apikey") {
           configService.setProvider(menu.provider.id);
-          setMenu({ type: 'model-select', provider: menu.provider });
+          setMenu({ type: "model-select", provider: menu.provider });
           setMenuIndex(0);
           return;
         }
         closeMenu();
         return;
       }
-
-      if (menu.type === 'provider-select') {
+      if (menu.type === "provider-select") {
         if (key.downArrow) {
-          setMenuIndex(prev => Math.min(prev + 1, providers.length - 1));
+          setMenuIndex((prev) => Math.min(prev + 1, providers.length - 1));
           return;
         }
         if (key.upArrow) {
-          setMenuIndex(prev => Math.max(prev - 1, 0));
+          setMenuIndex((prev) => Math.max(prev - 1, 0));
           return;
         }
         if (key.return) {
@@ -403,31 +532,32 @@ export default function App({ agent, backgroundManager, mcpManager, version }: A
         }
         return;
       }
-
-      if (menu.type === 'provider-apikey') {
+      if (menu.type === "provider-apikey") {
         if (key.return) {
-          confirmApiKey(menu.provider);
+          const key2 = apikeyInput.trim() || undefined;
+          configService.setProvider(menu.provider.id, key2);
+          openModelMenu(menu.provider);
           return;
         }
         if (key.backspace || key.delete) {
-          setApikeyInput(prev => prev.slice(0, -1));
+          setApikeyInput((prev) => prev.slice(0, -1));
           return;
         }
         if (inputChar && !key.ctrl && !key.meta) {
-          setApikeyInput(prev => prev + inputChar);
+          setApikeyInput((prev) => prev + inputChar);
           return;
         }
         return;
       }
-
-      if (menu.type === 'model-select') {
-        const models = menu.provider.models;
+      if (menu.type === "model-select") {
+        const models = dynamicModels || menu.provider.models;
+        if (models.length === 0) return;
         if (key.downArrow) {
-          setMenuIndex(prev => Math.min(prev + 1, models.length - 1));
+          setMenuIndex((prev) => Math.min(prev + 1, models.length - 1));
           return;
         }
         if (key.upArrow) {
-          setMenuIndex(prev => Math.max(prev - 1, 0));
+          setMenuIndex((prev) => Math.max(prev - 1, 0));
           return;
         }
         if (key.return) {
@@ -436,247 +566,208 @@ export default function App({ agent, backgroundManager, mcpManager, version }: A
         }
         return;
       }
-
       return;
     }
 
-    // Normal mode
-    if (key.escape && isProcessing) {
-      agent.abort();
-      stopProcessing();
+    // Abort on Esc
+    if (key.escape) {
+      if (hasSuggestions) {
+        setSuggestions([]);
+        setSelectedSuggestionIndex(-1);
+        return;
+      }
+      if (isProcessing) {
+        agent.abort();
+        stopProcessing();
+        return;
+      }
       return;
     }
 
+    // Suggestion navigation
     if (hasSuggestions && !isProcessing) {
       if (key.downArrow) {
-        setSelectedSuggestionIndex(prev => Math.min(prev + 1, suggestions.length - 1));
+        setSelectedSuggestionIndex((prev) =>
+          prev < 0 ? 0 : Math.min(prev + 1, suggestions.length - 1),
+        );
         return;
       }
       if (key.upArrow) {
-        setSelectedSuggestionIndex(prev => Math.max(prev - 1, -1));
+        setSelectedSuggestionIndex((prev) => Math.max(prev - 1, -1));
         return;
       }
       if (key.tab) {
-        completeSuggestion(selectedSuggestionIndex >= 0 ? selectedSuggestionIndex : 0);
+        fillSuggestion(
+          selectedSuggestionIndex >= 0 ? selectedSuggestionIndex : 0,
+        );
         return;
       }
-      if (key.return && hasSuggestionSelected) {
-        completeSuggestion(selectedSuggestionIndex);
+      // Enter on selected suggestion → execute directly
+      if (key.return && selectedSuggestionIndex >= 0) {
+        executeSuggestion(selectedSuggestionIndex);
         return;
       }
     }
   });
 
-  const handlePreprocess = () => {
-    const tasksSummary = backgroundManager.getTasksSummary();
-    agent.updateBackgroundTasksContext(tasksSummary);
-  };
-
-  const handleSubmit = async (value: string) => {
-    if (menu) return;
-    setInput('');
-    if (value.startsWith('/')) {
-      await handleCommand(value);
+  // --- Command handling ---
+  function handleCommand(rawInput: string) {
+    const cmd = matchCommand(rawInput);
+    if (!cmd) {
+      addSystemMessage("Unknown command. Type /help for available commands.");
       return;
     }
-    handlePreprocess();
-    await processMessage(value);
-  };
 
-  const handleCommand = async (command: string) => {
-    const cmdName = command.split(' ')[0];
-
-    const cmdResult = executeCommand(command);
-
-    if (cmdResult === 'open_provider_menu') {
-      openProviderMenu();
-      return;
-    }
-    if (cmdResult === 'open_model_menu') {
-      const providerId = configService.getProvider() || 'nvidia';
-      const provider = getProvider(providerId);
-      if (provider) {
-        setMenu({ type: 'model-select', provider });
-        setMenuIndex(0);
+    switch (cmd) {
+      case "/provider":
+      case "/providers":
+        openProviderMenu();
+        break;
+      case "/model":
+      case "/models": {
+        const providerId = configService.getProvider() || "fireworks";
+        const provider = getProvider(providerId);
+        if (provider) {
+          openModelMenu(provider);
+        }
+        break;
       }
-      return;
-    }
-    if (cmdResult === 'toggle_thinking') {
-      setShowThinking(!showThinking);
-      addSystemMessage(`Thinking display ${!showThinking ? 'enabled' : 'disabled'}`);
-      return;
-    }
-    if (cmdResult === 'clear') { 
-      process.stdout.write('\x1b[2J\x1b[3J\x1b[H');
-      resetMessages(); 
-      return; 
-    }
-    if (cmdResult === 'compact') { await handleCompactContext(); return; }
-    if (cmdResult === 'help') {
-      const helpText = commands.map(cmd => `  ${cmd.name.padEnd(20)} ${cmd.description}`).join('\n');
-      addSystemMessage(`Commands:\n\n${helpText}\n\nType / for commands, @ for files`);
-      return;
-    }
-    if (cmdResult === 'exit') { process.exit(0); }
-    if (cmdResult === 'tasks') { handleListTasks(); return; }
-    if (cmdResult === 'show_mcp') { handleShowMcp(); return; }
-    if (cmdResult === 'list_skills') { handleListSkills(); return; }
-    if (cmdResult === 'skill_off') { handleSkillOff(); return; }
-    if (cmdResult?.startsWith('skill:')) {
-      const skillData = cmdResult.replace('skill:', '');
-      const colonIndex = skillData.indexOf(':');
-      let skillName: string;
-      let skillMessage: string | null = null;
-      
-      if (colonIndex > 0) {
-        skillName = skillData.substring(0, colonIndex);
-        skillMessage = skillData.substring(colonIndex + 1);
-      } else {
-        skillName = skillData;
+      case "/thinking":
+        setShowThinking((prev) => !prev);
+        addSystemMessage(
+          `Thinking display ${!showThinking ? "enabled" : "disabled"}`,
+        );
+        break;
+      case "/clear":
+        process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
+        resetMessages();
+        break;
+      case "/compact":
+        handleCompactContext();
+        break;
+      case "/help": {
+        const helpText = commands
+          .map((c) => `  ${c.name.padEnd(16)} ${c.description}`)
+          .join("\n");
+        addSystemMessage(`Commands:\n\n${helpText}`);
+        break;
       }
-      
-      await handleSkill(skillName, skillMessage);
-      return;
+      case "/exit":
+        process.exit(0);
+      case "/mcp":
+        handleShowMcp();
+        break;
+      default:
+        addSystemMessage(`Unknown command: ${cmd}`);
     }
-    if (cmdResult && typeof cmdResult === 'string') {
-      addSystemMessage(cmdResult);
-      return;
-    }
-  };
-
-  const handleListSkills = () => {
-    const help = skillsManager.getSkillHelp();
-    addSystemMessage(help);
-  };
-
-  const handleSkill = async (skillName: string, message?: string | null) => {
-    const skill = skillsManager.loadSkill(skillName);
-    if (!skill) {
-      addSystemMessage(`Skill not found: ${skillName}`);
-      return;
-    }
-
-    const location = skill.isGlobal ? 'global' : 'project';
-    const locationPath = skill.isGlobal ? '~/.tod/skills/' : '.tod/skills/';
-    const rendered = skillsManager.renderSkillInstructions(skill, message || '');
-
-    // activate skill context until /skill-off
-    agent.setActiveSkill(rendered);
-
-    addSystemMessage(`[skill] /${skill.name} activated (${location})\n  ${skill.description}\n  ${locationPath}${skill.name}/`);
-
-    // if user passed inline arguments/message - execute task right away
-    if (message && message.trim()) {
-      handlePreprocess();
-      await processMessage(message.trim());
-    }
-  };
-
-  const handleSkillOff = () => {
-    agent.setActiveSkill(null);
-    addSystemMessage('Skill mode deactivated.');
-  };
+  }
 
   const handleCompactContext = async () => {
-    addSystemMessage('Compacting context...');
+    addSystemMessage("Compacting context...");
     try {
       const result = await agent.compactContext();
       resetMessages();
       addMessage({
-        role: 'assistant',
-        content: `Context compacted!\nOld: ${result.oldTokens} tokens → New: ${result.newTokens} tokens (saved ${Math.round(((result.oldTokens - result.newTokens) / result.oldTokens) * 100)}%)`,
+        role: "assistant",
+        content: `Context compacted!\nOld: ${result.oldTokens}t → New: ${result.newTokens}t (saved ${Math.round(((result.oldTokens - result.newTokens) / result.oldTokens) * 100)}%)`,
       });
     } catch (error) {
-      addSystemMessage(`Failed to compact: ${error instanceof Error ? error.message : String(error)}`);
+      addSystemMessage(
+        `Failed to compact: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
-  };
-
-  const handleListTasks = () => {
-    const tasks = backgroundManager.getAllTasks();
-    addSystemMessage(tasks.length === 0 ? 'No background tasks' : backgroundManager.getTasksSummary());
   };
 
   const handleShowMcp = () => {
     if (!mcpManager) {
-      addSystemMessage('MCP manager is not initialized');
+      addSystemMessage("MCP not initialized");
       return;
     }
     const statuses = mcpManager.getStatus();
     if (statuses.length === 0) {
-      addSystemMessage('No MCP servers configured');
+      addSystemMessage("No MCP servers configured");
       return;
     }
-    const lines: string[] = ['MCP Servers:'];
+    const lines: string[] = ["MCP Servers:"];
     for (const s of statuses) {
-      const statusIcon = s.status === 'connected' ? '●' : s.status === 'error' ? '✗' : '○';
-      const statusColor = s.status === 'connected' ? 'green' : s.status === 'error' ? 'red' : 'yellow';
-      lines.push(`  ${statusIcon} ${s.name.padEnd(20)} ${s.status} (${s.toolCount} tools)`);
-      if (s.error) {
-        lines.push(`      Error: ${s.error}`);
-      }
+      const icon =
+        s.status === "connected" ? "●" : s.status === "error" ? "✗" : "○";
+      lines.push(
+        `  ${icon} ${s.name.padEnd(20)} ${s.status} (${s.toolCount} tools)`,
+      );
+      if (s.error) lines.push(`      Error: ${s.error}`);
     }
-    addSystemMessage(lines.join('\n'));
+    addSystemMessage(lines.join("\n"));
   };
 
   const addSystemMessage = (content: string) => {
-    addMessage({ role: 'assistant', content });
+    addMessage({ role: "assistant", content });
   };
 
-  const modelName = configService.getModel();
+  // --- Submit handler ---
+  const handleSubmit = async (value: string) => {
+    if (menu) return;
+    setInput("");
+    setSuggestions([]);
+    setSelectedSuggestionIndex(-1);
+
+    if (value.trim().startsWith("/")) {
+      handleCommand(value.trim());
+      return;
+    }
+
+    if (needsSetup) {
+      addSystemMessage(
+        "No API key configured. Use /providers to select a provider and set your API key.",
+      );
+      return;
+    }
+
+    await processMessage(value);
+  };
+
+  const modelName =
+    configService.getModel().split("/").pop() || configService.getModel();
+
+  const maxContext = (() => {
+    const providerId = configService.getProvider() || "fireworks";
+    const modelId = configService.getModel();
+    const info = getModelInfo(providerId, modelId);
+    return info?.contextLength || 128000;
+  })();
 
   return (
-    <Box flexDirection="column" padding={1}>
+    <Box flexDirection="column" paddingLeft={1} paddingRight={1}>
       <Header version={version} currentDir={currentDir} />
 
-      <MessageList messages={messages} thinking={currentThinking} showThinking={showThinking} />
+      <MessageList
+        messages={messages}
+        thinking={currentThinking}
+        showThinking={showThinking}
+      />
 
-      {backgroundTasks.length > 0 && <BackgroundTasksList tasks={backgroundTasks} />}
-
-      {/* Interactive provider/model menu */}
-      <ProviderMenu menu={menu} selectedIndex={menuIndex} apikeyInput={apikeyInput} />
+      <ProviderMenu
+        menu={menu}
+        selectedIndex={menuIndex}
+        apikeyInput={apikeyInput}
+        dynamicModels={dynamicModels}
+      />
 
       {hasSuggestions && !menu && (
-        <Box flexDirection="column" marginTop={1} marginBottom={0}>
-          {suggestions.map((item, idx) => {
-            const isSelected = idx === selectedSuggestionIndex;
-            const bg = isSelected ? 'cyan' : undefined;
-            const fg = isSelected ? 'black' : undefined;
-
-            if (item.type === 'command') {
-              return (
-                <Box key={idx}>
-                  <Text color={isSelected ? 'black' : 'cyan'} backgroundColor={bg}>
-                    {isSelected ? ' ▶ ' : '   '}
-                    {item.name.padEnd(16)}
-                  </Text>
-                  <Text color={isSelected ? 'black' : 'gray'} backgroundColor={bg} dimColor={!isSelected}>
-                    {' '}{item.description}
-                  </Text>
-                </Box>
-              );
-            } else {
-              return (
-                <Box key={idx}>
-                  <Text color={isSelected ? 'black' : 'gray'} backgroundColor={bg}>
-                    {isSelected ? ' ▶ ' : '   '}
-                  </Text>
-                  <Text color={isSelected ? 'black' : (item.isDir ? 'yellow' : 'white')} backgroundColor={bg}>
-                    {item.isDir ? 'dir  ' : 'file '}
-                  </Text>
-                  <Text color={isSelected ? 'black' : 'white'} backgroundColor={bg}>
-                    {item.label}
-                  </Text>
-                </Box>
-              );
-            }
-          })}
-          <Text color="gray" dimColor>   ↑↓ navigate  Tab/Enter complete  Esc cancel</Text>
-        </Box>
+        <SuggestionBar
+          suggestions={suggestions}
+          selectedIndex={selectedSuggestionIndex}
+          onSelect={(idx) => setSelectedSuggestionIndex(idx)}
+          onExecute={executeSuggestion}
+        />
       )}
 
       {isProcessing && (
         <Box marginTop={1}>
           <WorkingIndicator />
+          {pendingCount > 0 && (
+            <Text color="yellow"> · {pendingCount} queued</Text>
+          )}
         </Box>
       )}
 
@@ -685,57 +776,19 @@ export default function App({ agent, backgroundManager, mcpManager, version }: A
         onChange={menu ? () => {} : setInput}
         onSubmit={handleSubmit}
         isProcessing={isProcessing || !!menu}
-        blockReturn={hasSuggestionSelected || !!menu}
+        hasPending={pendingCount > 0}
+        needsSetup={needsSetup}
       />
 
-      <StatusBar modelName={modelName} isProcessing={isProcessing} tokensUsed={tokensUsed} mcpStatus={mcpManager?.getStatusSummary()} />
-
+      <StatusBar
+        modelName={modelName}
+        isProcessing={isProcessing}
+        tokensUsed={totalTokens}
+        maxContext={maxContext}
+        mcpStatus={mcpManager?.getStatusSummary()}
+      />
     </Box>
   );
 }
 
-function BackgroundTasksList({ tasks }: { tasks: BackgroundTask[] }) {
-  const [frame, setFrame] = useState(0);
-
-  useEffect(() => {
-    const interval = setInterval(() => setFrame(prev => prev + 1), 120);
-    return () => clearInterval(interval);
-  }, []);
-
-  const spinnerFrames = ['|', '/', '-', '\\'];
-  const spinner = spinnerFrames[frame % spinnerFrames.length];
-
-  return (
-    <Box marginTop={1} flexDirection="column">
-      {tasks.slice(-3).map(task => {
-        if (task.status === 'completed') {
-          return (
-            <Box key={task.id}>
-              <Text color="green">+ </Text>
-              <Text color="green" bold>{task.name}</Text>
-              <Text color="gray" dimColor> done</Text>
-            </Box>
-          );
-        }
-        if (task.status === 'failed') {
-          return (
-            <Box key={task.id}>
-              <Text color="red">x </Text>
-              <Text color="red" bold>{task.name}</Text>
-              <Text color="gray" dimColor> failed</Text>
-            </Box>
-          );
-        }
-        // running / pending
-        const activity = task.activity || 'Waiting';
-        return (
-          <Box key={task.id}>
-            <Text color="cyan">{spinner} </Text>
-            <Text bold>{task.name}</Text>
-            <Text color="gray"> [{activity}]</Text>
-          </Box>
-        );
-      })}
-    </Box>
-  );
-}
+export default App;

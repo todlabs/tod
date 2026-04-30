@@ -1,6 +1,6 @@
 {
   "name": "@todlabs/tod",
-  "version": "1.1.2",
+  "version": "1.2.0",
   "description": "Autonomous AI agent with TUI",
   "main": "dist/index.js",
   "type": "module",
@@ -13,11 +13,11 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "node build.cjs",
-    "start": "node dist/index.js",
-    "dev": "tsx src/index.ts",
-    "test": "npm run build && node --test test/*.test.mjs",
-    "prepublishOnly": "npm run build && npm test"
+    "build": "bun run build.ts",
+    "start": "bun run dist/index.js",
+    "dev": "bun run --watch src/index.ts",
+    "test": "bun run build && bun test",
+    "prepublishOnly": "bun run build && bun test"
   },
   "keywords": [
     "ai",
@@ -50,18 +50,13 @@
     "ink-markdown": "^1.0.1",
     "ink-spinner": "^5.0.0",
     "ink-text-input": "^6.0.0",
-    "neo-blessed": "^0.2.0",
     "openai": "^4.77.3",
     "react": "^18.3.1",
-    "terminal-kit": "^3.1.2",
     "zod": "^3.24.1"
   },
   "devDependencies": {
-    "@types/node": "^22.10.2",
+    "@types/bun": "^1.2.15",
     "@types/react": "^18.3.18",
-    "@types/terminal-kit": "^2.5.7",
-    "esbuild": "^0.24.2",
-    "tsx": "^4.19.2",
     "typescript": "^5.9.3"
   }
 }

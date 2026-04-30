@@ -1,14 +1,14 @@
-import { z } from 'zod';
-import { config } from 'dotenv';
-import * as fs from 'fs';
-import * as path from 'path';
-import * as os from 'os';
-import { providers, getProvider } from './providers.js';
+import { z } from "zod";
+import { config } from "dotenv";
+import * as fs from "fs";
+import * as path from "path";
+import * as os from "os";
+import { providers, getProvider } from "./providers.js";
 
 config();
 
 const McpServerStdioSchema = z.object({
-  type: z.literal('stdio').default('stdio'),
+  type: z.literal("stdio").default("stdio"),
   command: z.string(),
   args: z.array(z.string()).default([]),
   env: z.record(z.string()).optional(),
@@ -16,7 +16,7 @@ const McpServerStdioSchema = z.object({
 });
 
 const McpServerRemoteSchema = z.object({
-  type: z.literal('remote'),
+  type: z.literal("remote"),
   url: z.string().url(),
   headers: z.record(z.string()).optional(),
   enabled: z.boolean().default(true),
@@ -26,23 +26,29 @@ const McpServerSchema = z.union([McpServerStdioSchema, McpServerRemoteSchema]);
 export type McpServerConfig = z.infer<typeof McpServerSchema>;
 
 const ProviderProfileSchema = z.object({
-  apiKey: z.string().default(''),
-  baseURL: z.string().url('Invalid base URL'),
-  model: z.string().min(1, 'Model is required'),
+  apiKey: z.string().default(""),
+  baseURL: z.string().url("Invalid base URL"),
+  model: z.string().min(1, "Model is required"),
   maxTokens: z.number().positive().max(128000).default(16384),
   temperature: z.number().min(0).max(2).default(1),
 });
 
 const ConfigSchema = z.object({
   // active runtime profile
-  activeProvider: z.string().default('nvidia'),
+  activeProvider: z.string().default("fireworks"),
   providerConfigs: z.record(ProviderProfileSchema).default({}),
 
   // backward-compatible fields (still written)
   provider: z.string().optional(),
-  apiKey: z.string().default(''),
-  baseURL: z.string().url('Invalid base URL').default('https://integrate.api.nvidia.com/v1'),
-  model: z.string().min(1, 'Model is required').default('z-ai/glm4.7'),
+  apiKey: z.string().default(""),
+  baseURL: z
+    .string()
+    .url("Invalid base URL")
+    .default("https://api.fireworks.ai/inference/v1"),
+  model: z
+    .string()
+    .min(1, "Model is required")
+    .default("accounts/fireworks/models/kimi-k2p6"),
   maxTokens: z.number().positive().max(128000).default(16384),
   temperature: z.number().min(0).max(2).default(1),
   providerKeys: z.record(z.string()).default({}),
@@ -58,13 +64,13 @@ const getHomeDir = (): string => os.homedir();
 
 const getConfigPath = (): string => {
   const homeDir = getHomeDir();
-  const configDir = path.join(homeDir, '.tod');
-  return path.join(configDir, 'config.json');
+  const configDir = path.join(homeDir, ".tod");
+  return path.join(configDir, "config.json");
 };
 
 const ensureConfigDir = (): void => {
   const homeDir = getHomeDir();
-  const configDir = path.join(homeDir, '.tod');
+  const configDir = path.join(homeDir, ".tod");
   if (!fs.existsSync(configDir)) fs.mkdirSync(configDir, { recursive: true });
 };
 
@@ -72,9 +78,9 @@ const readConfigFile = (): Partial<Config> => {
   const configPath = getConfigPath();
   if (fs.existsSync(configPath)) {
     try {
-      return JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+      return JSON.parse(fs.readFileSync(configPath, "utf-8"));
     } catch {
-      console.warn('Failed to read config file, using defaults');
+      console.warn("Failed to read config file, using defaults");
     }
   }
   return {};
@@ -83,16 +89,16 @@ const readConfigFile = (): Partial<Config> => {
 const writeConfigFile = (config: Config): void => {
   ensureConfigDir();
   try {
-    fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2), 'utf-8');
+    fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2), "utf-8");
   } catch (error) {
-    console.error('Failed to write config file:', error);
+    console.error("Failed to write config file:", error);
   }
 };
 
 const defaultProfileFor = (providerId: string): ProviderProfile => {
-  const p = getProvider(providerId) || getProvider('nvidia')!;
+  const p = getProvider(providerId) || getProvider("fireworks")!;
   return {
-    apiKey: '',
+    apiKey: "",
     baseURL: p.baseURL,
     model: p.defaultModel,
     maxTokens: 16384,
@@ -100,7 +106,9 @@ const defaultProfileFor = (providerId: string): ProviderProfile => {
   };
 };
 
-const ensureProviderProfiles = (fileConfig: Partial<Config>): Record<string, ProviderProfile> => {
+const ensureProviderProfiles = (
+  fileConfig: Partial<Config>,
+): Record<string, ProviderProfile> => {
   const profiles: Record<string, ProviderProfile> = {};
 
   for (const p of providers) profiles[p.id] = defaultProfileFor(p.id);
@@ -121,12 +129,15 @@ const ensureProviderProfiles = (fileConfig: Partial<Config>): Record<string, Pro
   // Migrate providerKeys + active fields from legacy shape
   const oldKeys = (fileConfig as any).providerKeys || {};
   for (const [providerId, key] of Object.entries(oldKeys)) {
-    if (!profiles[providerId]) profiles[providerId] = defaultProfileFor(providerId);
-    if (typeof key === 'string' && key) profiles[providerId].apiKey = key;
+    if (!profiles[providerId])
+      profiles[providerId] = defaultProfileFor(providerId);
+    if (typeof key === "string" && key) profiles[providerId].apiKey = key;
   }
 
-  const activeProvider = (fileConfig as any).activeProvider || (fileConfig as any).provider;
-  const legacyProvider = activeProvider && profiles[activeProvider] ? activeProvider : undefined;
+  const activeProvider =
+    (fileConfig as any).activeProvider || (fileConfig as any).provider;
+  const legacyProvider =
+    activeProvider && profiles[activeProvider] ? activeProvider : undefined;
   if (legacyProvider && (fileConfig as any).apiKey) {
     profiles[legacyProvider].apiKey = String((fileConfig as any).apiKey);
   }
@@ -140,7 +151,12 @@ const ensureProviderProfiles = (fileConfig: Partial<Config>): Record<string, Pro
   return profiles;
 };
 
-export const initConfig = (apiKey: string, model?: string, baseURL?: string, providerId = 'nvidia'): void => {
+export const initConfig = (
+  apiKey: string,
+  model?: string,
+  baseURL?: string,
+  providerId = "fireworks",
+): void => {
   const providerConfigs = ensureProviderProfiles({});
   providerConfigs[providerId] = {
     ...providerConfigs[providerId],
@@ -154,7 +170,12 @@ export const initConfig = (apiKey: string, model?: string, baseURL?: string, pro
     activeProvider: providerId,
     provider: providerId,
     providerConfigs,
-    providerKeys: Object.fromEntries(Object.entries(providerConfigs).map(([id, cfg]) => [id, cfg.apiKey || ''])),
+    providerKeys: Object.fromEntries(
+      Object.entries(providerConfigs).map(([id, cfg]) => [
+        id,
+        cfg.apiKey || "",
+      ]),
+    ),
     apiKey: active.apiKey,
     baseURL: active.baseURL,
     model: active.model,
@@ -178,7 +199,11 @@ export class ConfigService {
     const envMaxTokens = process.env.MAX_TOKENS;
     const envTemperature = process.env.TEMPERATURE;
 
-    const activeProvider = (process.env.LLM_PROVIDER || (fileConfig as any).activeProvider || (fileConfig as any).provider || 'nvidia');
+    const activeProvider =
+      process.env.LLM_PROVIDER ||
+      (fileConfig as any).activeProvider ||
+      (fileConfig as any).provider ||
+      "fireworks";
     const providerConfigs = ensureProviderProfiles(fileConfig);
 
     if (!providerConfigs[activeProvider]) {
@@ -188,9 +213,17 @@ export class ConfigService {
     const active = providerConfigs[activeProvider];
 
     // env overrides for active provider only
-    if (process.env.LLM_API_KEY || process.env.NVIDIA_API_KEY) active.apiKey = process.env.LLM_API_KEY || process.env.NVIDIA_API_KEY || active.apiKey;
-    if (process.env.LLM_BASE_URL || process.env.NVIDIA_BASE_URL) active.baseURL = process.env.LLM_BASE_URL || process.env.NVIDIA_BASE_URL || active.baseURL;
-    if (process.env.LLM_MODEL || process.env.MODEL_NAME) active.model = process.env.LLM_MODEL || process.env.MODEL_NAME || active.model;
+    if (process.env.LLM_API_KEY || process.env.NVIDIA_API_KEY)
+      active.apiKey =
+        process.env.LLM_API_KEY || process.env.NVIDIA_API_KEY || active.apiKey;
+    if (process.env.LLM_BASE_URL || process.env.NVIDIA_BASE_URL)
+      active.baseURL =
+        process.env.LLM_BASE_URL ||
+        process.env.NVIDIA_BASE_URL ||
+        active.baseURL;
+    if (process.env.LLM_MODEL || process.env.MODEL_NAME)
+      active.model =
+        process.env.LLM_MODEL || process.env.MODEL_NAME || active.model;
     if (envMaxTokens) active.maxTokens = parseInt(envMaxTokens, 10);
     if (envTemperature) active.temperature = parseFloat(envTemperature);
 
@@ -198,8 +231,13 @@ export class ConfigService {
       activeProvider,
       provider: activeProvider,
       providerConfigs,
-      providerKeys: Object.fromEntries(Object.entries(providerConfigs).map(([id, cfg]) => [id, cfg.apiKey || ''])),
-      apiKey: active.apiKey || '',
+      providerKeys: Object.fromEntries(
+        Object.entries(providerConfigs).map(([id, cfg]) => [
+          id,
+          cfg.apiKey || "",
+        ]),
+      ),
+      apiKey: active.apiKey || "",
       baseURL: active.baseURL,
       model: active.model,
       maxTokens: active.maxTokens,
@@ -219,14 +257,21 @@ export class ConfigService {
 
   private syncLegacyFields(): void {
     const activeProvider = this.config.activeProvider;
-    const active = this.config.providerConfigs[activeProvider] || defaultProfileFor(activeProvider);
+    const active =
+      this.config.providerConfigs[activeProvider] ||
+      defaultProfileFor(activeProvider);
     this.config.provider = activeProvider;
     this.config.apiKey = active.apiKey;
     this.config.baseURL = active.baseURL;
     this.config.model = active.model;
     this.config.maxTokens = active.maxTokens;
     this.config.temperature = active.temperature;
-    this.config.providerKeys = Object.fromEntries(Object.entries(this.config.providerConfigs).map(([id, cfg]) => [id, cfg.apiKey || '']));
+    this.config.providerKeys = Object.fromEntries(
+      Object.entries(this.config.providerConfigs).map(([id, cfg]) => [
+        id,
+        cfg.apiKey || "",
+      ]),
+    );
   }
 
   private save(): void {
@@ -239,14 +284,28 @@ export class ConfigService {
     return this.config;
   }
 
-  getConfigPath(): string { return getConfigPath(); }
+  getConfigPath(): string {
+    return getConfigPath();
+  }
 
-  getApiKey(): string { return this.getConfig().apiKey; }
-  getBaseURL(): string { return this.getConfig().baseURL; }
-  getModel(): string { return this.getConfig().model; }
-  getMaxTokens(): number { return this.getConfig().maxTokens; }
-  getTemperature(): number { return this.getConfig().temperature; }
-  getProvider(): string | undefined { return this.getConfig().activeProvider; }
+  getApiKey(): string {
+    return this.getConfig().apiKey;
+  }
+  getBaseURL(): string {
+    return this.getConfig().baseURL;
+  }
+  getModel(): string {
+    return this.getConfig().model;
+  }
+  getMaxTokens(): number {
+    return this.getConfig().maxTokens;
+  }
+  getTemperature(): number {
+    return this.getConfig().temperature;
+  }
+  getProvider(): string | undefined {
+    return this.getConfig().activeProvider;
+  }
 
   getProviderConfig(providerId: string): ProviderProfile {
     if (!this.config.providerConfigs[providerId]) {
@@ -282,7 +341,7 @@ export class ConfigService {
     const profile = this.getProviderConfig(providerId);
     profile.apiKey = apiKey;
     this.save();
-    return 'API key updated';
+    return "API key updated";
   }
 
   getProviderKey(providerId: string): string | undefined {
