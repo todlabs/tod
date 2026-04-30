@@ -3,11 +3,7 @@
 **T**ool **o**f **D**ev
 
 <p align="center">
-  <img src="public/preview.png" alt="TOD Preview" width="600">
-</p>
-
-<p align="center">
-  AI-агент в твоём терминале. Пишешь — он делает.
+  AI agent in your terminal. You type — it does.
 </p>
 
 <p align="center">
@@ -31,9 +27,9 @@
 
 ---
 
-## Суть
+## The point
 
-TOD — это просто. Открываешь терминал, пишешь что надо, получаешь результат. Никаких подписок, никаких привязок к одному провайдеру. Твой ключ — твоя модель.
+TOD is simple. Open terminal, type what you need, get it done. No subscriptions, no vendor lock-in. Your key — your model.
 
 ## Quick Start
 
@@ -45,35 +41,35 @@ bun run build
 bun run start
 ```
 
-Первый запуск — TOD сам спросит провайдера и ключ. Всё.
+First launch — TOD asks for provider and API key. That's it.
 
-## Использование
+## Usage
 
 ```
-> Сделай компонент логина на React
-> @src/utils.js перепиши на async/await
+> Create a React login component
+> @src/utils.js rewrite with async/await
 > /model
 > /clear
 ```
 
-## Команды
+## Commands
 
-| Команда | Что делает |
-|---------|------------|
-| `/provider` | Выбрать провайдера и ввести API ключ |
-| `/model` | Сменить модель |
-| `/thinking` | Показать/скрыть размышления модели |
-| `/clear` | Очистить историю |
-| `/compact` | Сжать контекст |
-| `/mcp` | Показать MCP серверы |
-| `/help` | Список команд |
-| `/exit` | Выйти |
+| Command | What it does |
+|---------|--------------|
+| `/provider` | Pick provider & enter API key |
+| `/model` | Switch model |
+| `/thinking` | Show/hide model thinking |
+| `/clear` | Clear history |
+| `/compact` | Compress context |
+| `/mcp` | Show MCP servers |
+| `/help` | List commands |
+| `/exit` | Exit |
 
-Тоже самое: `/providers`, `/models`.
+Also works: `/providers`, `/models`.
 
-## Конфиг
+## Config
 
-Всё в `~/.tod/config.json`. Ключи хранятся локально, никуда не уходят.
+Everything in `~/.tod/config.json`. Keys stay local, never sent anywhere.
 
 ```json
 {
@@ -87,31 +83,31 @@ bun run start
 }
 ```
 
-Поддерживаемые провайдеры: Fireworks, OpenAI, Anthropic, OpenRouter — и любой OpenAI-совместимый API через кастомный baseURL.
+Supported providers: Fireworks, OpenAI, Anthropic, OpenRouter — and any OpenAI-compatible API via custom baseURL.
 
 ## Why not just...
 
-**Claude Code?** Привязан к Anthropic. Платная подписка. TOD — любой провайдер, свой ключ, без переплат.
+**Claude Code?** Locked to Anthropic. Paid subscription. TOD — any provider, your own key, no markup.
 
-**OpenCode?** Go. Монолит. Сложнее контрибьютить. TOD — TypeScript, Bun, React Ink — стек понятный, код читаемый.
+**OpenCode?** Go. Monolith. Harder to contribute. TOD — TypeScript, Bun, React Ink — familiar stack, readable code.
 
-**Cursor/Windsurf?** Это IDE, не терминал. TOD живёт там, где ты работаешь — в терминале. Без оверхеда.
+**Cursor/Windsurf?** Those are IDEs, not terminals. TOD lives where you work — in the terminal. Zero overhead.
 
-По сути: TOD — это просто инструмент. Не продукт, не сервис. Берёшь — пользуешься.
+Bottom line: TOD is just a tool. Not a product, not a service. Pick it up — use it.
 
 ## MCP
 
-Поддержка Model Context Protocol — подключай внешние инструменты и сервисы.
+Model Context Protocol support — connect external tools and services.
 
 - [English](docs/mcp/README.md)
 - [Русский](docs/mcp/README.ru.md)
 - [Deutsch](docs/mcp/README.de.md)
 - [Français](docs/mcp/README.fr.md)
 
-## Требования
+## Requirements
 
 - Bun 1.0+
-- API ключ любого поддерживаемого провайдера
+- API key from any supported provider
 
 ## License
 
