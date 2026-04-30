@@ -1,8 +1,16 @@
 import { useState, useCallback, useRef } from "react";
 import type { Agent, AgentMessage } from "../../agent/index.js";
 import { logger } from "../../services/logger.js";
-
-const MAX_MESSAGE_RETRIES = 2;
+import {
+  saveChat,
+  loadChat,
+  listChats,
+  generateChatId,
+  generateChatName,
+  setCurrentChatId as setFsCurrentChatId,
+  getCurrentChatId as getFsCurrentChatId,
+  type ChatFile,
+} from "../../services/chat-storage.js";
 
 interface UseMessageProcessingReturn {
   messages: AgentMessage[];
@@ -16,6 +24,11 @@ interface UseMessageProcessingReturn {
   stopProcessing: () => void;
   resetMessages: () => void;
   addMessage: (message: AgentMessage) => void;
+  currentChatId: string | null;
+  currentChatName: string | null;
+  resumeChat: (id: string) => boolean;
+  getChatList: () => Array<{ id: string; name: string; updatedAt: string; messageCount: number }>;
+  lastChatId: string | null;
 }
 
 export function useMessageProcessing(agent: Agent): UseMessageProcessingReturn {
@@ -25,9 +38,28 @@ export function useMessageProcessing(agent: Agent): UseMessageProcessingReturn {
   const [status, setStatus] = useState("");
   const [shouldStop, setShouldStop] = useState(false);
   const [pendingCount, setPendingCount] = useState(0);
+  const [currentChatId, setCurrentChatId] = useState<string | null>(null);
+  const [currentChatName, setCurrentChatName] = useState<string | null>(null);
   const shouldStopRef = useRef(false);
   const queueRef = useRef<string[]>([]);
   const isProcessingRef = useRef(false);
+  const firstUserMessageRef = useRef<string | null>(null);
+
+  // Read last chat id from disk for resume hint
+  const lastChatId = getFsCurrentChatId();
+
+  // Auto-save chat to disk
+  const autoSave = useCallback((chatId: string | null, chatName: string | null) => {
+    if (!chatId) return;
+    const chat: ChatFile = {
+      id: chatId,
+      name: chatName || "untitled",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      messages: agent.getMessagesForSave(),
+    };
+    saveChat(chat);
+  }, [agent]);
 
   const processOneMessage = useCallback(
     async (userMessage: string) => {
@@ -35,6 +67,19 @@ export function useMessageProcessing(agent: Agent): UseMessageProcessingReturn {
       isProcessingRef.current = true;
       setCurrentThinking("");
       setStatus("");
+
+      // Ensure we have a chat session
+      let chatId = currentChatId;
+      let chatName = currentChatName;
+      if (!chatId) {
+        chatId = generateChatId();
+        const name = generateChatName(userMessage);
+        chatName = name;
+        setCurrentChatId(chatId);
+        setCurrentChatName(name);
+        setFsCurrentChatId(chatId);
+        firstUserMessageRef.current = userMessage;
+      }
 
       const userMsg: AgentMessage = {
         role: "user",
@@ -92,14 +137,10 @@ export function useMessageProcessing(agent: Agent): UseMessageProcessingReturn {
 
         await agent.processMessage(userMessage, {
           onChunk: (chunk) => {
-            if (shouldStopRef.current) {
-              return;
-            }
+            if (shouldStopRef.current) return;
 
             if (chunk.isThinking) {
-              if (!thinkingStartTime) {
-                thinkingStartTime = Date.now();
-              }
+              if (!thinkingStartTime) thinkingStartTime = Date.now();
               lastThinkingUpdate += chunk.content;
               const now = Date.now();
               if (now - lastThinkingRender > 100) {
@@ -127,14 +168,15 @@ export function useMessageProcessing(agent: Agent): UseMessageProcessingReturn {
 
         saveThinking();
         saveAssistantMessage();
-
         logger.info("Message processed successfully");
+
+        // Auto-save after each processed message
+        autoSave(chatId, chatName);
       } catch (error) {
         savePartialMessages();
 
         const errorMsg = error instanceof Error ? error.message : String(error);
 
-        // Check if the agent is stuck (isProcessing still true after error)
         if (agent.isBusy()) {
           logger.warn("Agent stuck after error, force-unsticking");
           agent.forceUnstick();
@@ -153,58 +195,42 @@ export function useMessageProcessing(agent: Agent): UseMessageProcessingReturn {
         setShouldStop(false);
         shouldStopRef.current = false;
 
-        // Safety check: if agent is still busy, force-unstick
-        if (agent.isBusy()) {
-          agent.forceUnstick();
-        }
+        if (agent.isBusy()) agent.forceUnstick();
       }
     },
-    [agent],
+    [agent, currentChatId, currentChatName, autoSave],
   );
 
-  // Drain the queue: process next message if available
   const drainQueue = useCallback(async () => {
     const next = queueRef.current.shift();
     if (next !== undefined) {
       setPendingCount(queueRef.current.length);
-      logger.info(
-        `Processing queued message (${queueRef.current.length} remaining in queue)`,
-      );
       await processOneMessage(next);
       drainQueue();
     }
   }, [processOneMessage]);
 
-  // Non-blocking version: queue the message if currently processing
   const queueMessage = useCallback(
     (message: string) => {
       if (!message.trim()) return;
-
       if (isProcessingRef.current) {
         queueRef.current.push(message);
         setPendingCount(queueRef.current.length);
-        logger.info(`Message queued (${queueRef.current.length} pending)`);
       } else {
-        processOneMessage(message).then(() => {
-          drainQueue();
-        });
+        processOneMessage(message).then(() => drainQueue());
       }
     },
     [processOneMessage, drainQueue],
   );
 
-  // Blocking version (for backwards compat / first message)
   const processMessage = useCallback(
     async (userMessage: string) => {
       if (!userMessage.trim()) return;
-
       if (isProcessingRef.current) {
         queueRef.current.push(userMessage);
         setPendingCount(queueRef.current.length);
-        logger.info(`Message queued (${queueRef.current.length} pending)`);
         return;
       }
-
       await processOneMessage(userMessage);
       drainQueue();
     },
@@ -217,24 +243,51 @@ export function useMessageProcessing(agent: Agent): UseMessageProcessingReturn {
       setShouldStop(true);
       setStatus("Stopping...");
       agent.abort();
-      logger.info("Stopping message processing");
     }
   }, [isProcessing, agent]);
 
   const resetMessages = useCallback(() => {
+    if (currentChatId) autoSave(currentChatId, currentChatName);
     setMessages([]);
     queueRef.current = [];
     setPendingCount(0);
     agent.reset();
-    // Safety: force-unstick if agent is stuck after reset
-    if (agent.isBusy()) {
-      agent.forceUnstick();
-    }
+    setCurrentChatId(null);
+    setCurrentChatName(null);
+    firstUserMessageRef.current = null;
+    setFsCurrentChatId(null);
+    if (agent.isBusy()) agent.forceUnstick();
     logger.info("Messages reset");
-  }, [agent]);
+  }, [agent, currentChatId, currentChatName, autoSave]);
 
   const addMessage = useCallback((message: AgentMessage) => {
     setMessages((prev) => [...prev, message]);
+  }, []);
+
+  const resumeChat = useCallback(
+    (id: string): boolean => {
+      const chat = loadChat(id);
+      if (!chat) return false;
+
+      agent.restoreMessages(chat.messages);
+      setCurrentChatId(chat.id);
+      setCurrentChatName(chat.name);
+      setFsCurrentChatId(chat.id);
+      firstUserMessageRef.current = chat.name;
+
+      const agentMsgs = agent.getAgentMessages().filter(
+        (m) => m.role !== "system" && !m.isThinking,
+      );
+      setMessages(agentMsgs);
+
+      logger.info("Chat resumed", { id, name: chat.name });
+      return true;
+    },
+    [agent],
+  );
+
+  const getChatList = useCallback(() => {
+    return listChats();
   }, []);
 
   return {
@@ -249,5 +302,10 @@ export function useMessageProcessing(agent: Agent): UseMessageProcessingReturn {
     stopProcessing,
     resetMessages,
     addMessage,
+    currentChatId,
+    currentChatName,
+    resumeChat,
+    getChatList,
+    lastChatId,
   };
 }

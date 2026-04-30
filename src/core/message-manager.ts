@@ -173,4 +173,22 @@ export class MessageManager {
 
     return Math.round(text.length / 4);
   }
+
+  /**
+   * Restore messages from a saved chat. Replaces all current messages.
+   * Regenerates the system prompt with current cwd.
+   */
+  restoreMessages(savedMessages: ChatCompletionMessageParam[]): void {
+    // Regenerate system prompt with current cwd
+    this.messages = [
+      {
+        role: 'system',
+        content: getSystemPrompt(process.cwd(), this.mcpToolDescriptions),
+      },
+      // Skip the old system prompt (index 0) from saved messages
+      ...savedMessages.slice(1),
+    ];
+    this.ephemeralContext.clear();
+    logger.debug('Messages restored', { count: this.messages.length });
+  }
 }

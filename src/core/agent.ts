@@ -5,6 +5,7 @@ import type {
   StreamChunk,
 } from "./types.js";
 import type { ChatCompletionTool } from "openai/resources/chat/completions";
+import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 import { LLMClient } from "./llm-client.js";
 import { MessageManager } from "./message-manager.js";
 import {
@@ -20,23 +21,13 @@ const MAX_AGENT_ITERATIONS = 25;
 const MAX_TOOL_RETRIES = 2;
 const MAX_SAME_TOOL_CALLS = 3;
 const MAX_PROCESS_MESSAGE_RETRIES = 2;
-const ZOMBIE_GUARD_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+const ZOMBIE_GUARD_TIMEOUT_MS = 5 * 60 * 1000;
 
-/**
- * Determine if an error is transient and worth retrying.
- * Reuses the same logic as LLMClient.isRetryableError.
- *
- * Retryable: network errors, 429 (rate limit), 500/502/503 (server errors).
- * Not retryable: 400 (bad request), 401 (auth), and other 4xx client errors.
- * Abort errors are never retryable.
- */
 export function isRetryableError(error: unknown): boolean {
   if (!(error instanceof Error)) {
-    // Unknown error types are treated as potentially transient
     return true;
   }
 
-  // Never retry abort errors
   if (error.name === "AbortError" || error.message === "Aborted") {
     return false;
   }
@@ -45,17 +36,14 @@ export function isRetryableError(error: unknown): boolean {
   const status = apiError.status;
 
   if (status) {
-    // Rate limit and server errors are retryable
     if (status === 429 || status === 500 || status === 502 || status === 503) {
       return true;
     }
-    // Client errors (400, 401, 403, 404, etc.) are not retryable
     if (status >= 400 && status < 500) {
       return false;
     }
   }
 
-  // Check for common network error codes
   const code = apiError.code;
   if (
     code === "ECONNRESET" ||
@@ -67,13 +55,9 @@ export function isRetryableError(error: unknown): boolean {
     return true;
   }
 
-  // Errors without a status code are likely network issues — retryable
   return !status;
 }
 
-/**
- * Sleep for the specified duration, with optional early abort via signal.
- */
 function sleepWithAbort(
   ms: number,
   signal?: AbortSignal | null,
@@ -131,11 +115,6 @@ export class Agent {
     this.isProcessing = false;
   }
 
-  /**
-   * Force-unstick the agent. Sets isProcessing = false, aborts any in-flight
-   * operation, and cleans up stuck state. Useful if the agent gets into a bad
-   * state that abort() alone can't resolve.
-   */
   forceUnstick(): void {
     logger.warn("Force-unsticking agent", {
       isProcessing: this.isProcessing,
@@ -165,7 +144,6 @@ export class Agent {
           },
         );
 
-        // Abort and reset
         if (this.abortController) {
           this.abortController.abort();
           this.abortController = null;
@@ -174,7 +152,6 @@ export class Agent {
       }
     }, ZOMBIE_GUARD_TIMEOUT_MS);
 
-    // Don't let the timer prevent process exit
     if (this.zombieGuardTimer.unref) {
       this.zombieGuardTimer.unref();
     }
@@ -204,15 +181,12 @@ export class Agent {
 
     for (let attempt = 0; attempt <= MAX_PROCESS_MESSAGE_RETRIES; attempt++) {
       try {
-        // Only add the user message on the first attempt; on retries the
-        // message is already in history from the first attempt.
         if (attempt === 0) {
           this.messages.addMessage("user", userMessage);
         }
 
         await this.runAgentLoop(callbacks);
 
-        // Success — reset and return
         this.isProcessing = false;
         this.abortController = null;
         this.clearZombieGuard();
@@ -221,13 +195,12 @@ export class Agent {
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
 
-        // Check if the error is retryable
         if (!isRetryableError(lastError)) {
           logger.error("Non-retryable error in processMessage", {
             error: lastError.message,
             attempt,
           });
-          break; // Don't retry — fall through to error reporting
+          break;
         }
 
         if (attempt >= MAX_PROCESS_MESSAGE_RETRIES) {
@@ -235,12 +208,11 @@ export class Agent {
             maxRetries: MAX_PROCESS_MESSAGE_RETRIES,
             error: lastError.message,
           });
-          break; // Retries exhausted — fall through to error reporting
+          break;
         }
 
-        // Retry with backoff
-        const baseDelay = Math.pow(2, attempt) * 1000; // 1s, 2s, 4s
-        const jitter = Math.random() * 500; // 0–500ms jitter
+        const baseDelay = Math.pow(2, attempt) * 1000;
+        const jitter = Math.random() * 500;
         const delay = baseDelay + jitter;
 
         logger.info("Retrying processMessage after retryable error", {
@@ -250,11 +222,8 @@ export class Agent {
           error: lastError.message,
         });
 
-        // Reset processing state for the retry, but keep the abort controller
-        // so the caller can still abort between retries.
         this.isProcessing = true;
         if (!this.abortController || this.abortController.signal.aborted) {
-          // If aborted between retries, don't continue
           logger.info("Aborted between processMessage retries, stopping");
           break;
         }
@@ -262,17 +231,13 @@ export class Agent {
         try {
           await sleepWithAbort(delay, this.abortController.signal);
         } catch {
-          // Aborted during backoff sleep
           break;
         }
 
-        // Restart zombie guard for the new attempt
         this.startZombieGuard();
       }
     }
 
-    // Error handling — we only reach here if all attempts failed or a
-    // non-retryable error occurred.
     this.isProcessing = false;
     this.abortController = null;
     this.clearZombieGuard();
@@ -280,10 +245,8 @@ export class Agent {
     const errorMsg = lastError?.message ?? "Unknown error";
     logger.error("Agent loop error", { error: errorMsg });
 
-    // Add error to message history so the LLM can understand context
     this.messages.addMessage("assistant", `[Error: ${errorMsg}]`);
 
-    // Notify the UI gracefully
     callbacks.onChunk({
       role: "assistant",
       content: `An error occurred: ${errorMsg}`,
@@ -295,7 +258,6 @@ export class Agent {
   private async runAgentLoop(callbacks: AgentProcessCallbacks): Promise<void> {
     const allTools = [...tools, ...getMcpTools()];
 
-    // Track last tool calls for infinite loop detection
     const recentToolCalls: Array<{ name: string; args: string }> = [];
 
     for (let iteration = 0; iteration < MAX_AGENT_ITERATIONS; iteration++) {
@@ -305,7 +267,6 @@ export class Agent {
       let assistantMessage = "";
       const accumulatedToolCalls: Map<number, ToolCallChunk> = new Map();
 
-      // Allow one retry for mid-stream failures
       let streamRetriesRemaining = 1;
 
       while (true) {
@@ -346,14 +307,12 @@ export class Agent {
             }
           }
 
-          // Stream completed successfully — exit the retry loop
           break;
         } catch (error) {
           const errorMsg =
             error instanceof Error ? error.message : String(error);
           logger.error("Stream failed mid-way", { error: errorMsg });
 
-          // Check if the error is retryable and we have retries left
           if (
             streamRetriesRemaining > 0 &&
             isRetryableError(error) &&
@@ -366,22 +325,16 @@ export class Agent {
               error: errorMsg,
             });
 
-            // Small backoff before retry
             const retryDelay = 1000 + Math.random() * 500;
             try {
               await sleepWithAbort(retryDelay, signal);
             } catch {
-              // Aborted during backoff
               break;
             }
 
-            // Retry the same iteration
             continue;
           }
 
-          // No retries left or non-retryable error — save partial state and break
-
-          // Save any partial assistant message that was accumulated
           if (assistantMessage) {
             this.messages.addMessage("assistant", assistantMessage);
             callbacks.onChunk({
@@ -390,7 +343,6 @@ export class Agent {
             });
           }
 
-          // Notify the UI about the stream error
           callbacks.onChunk({
             role: "assistant",
             content: `[Stream error: ${errorMsg}]`,
@@ -454,7 +406,6 @@ export class Agent {
         const toolArgs = toolCall.parsedArgs;
         const argsKey = JSON.stringify(toolArgs);
 
-        // Infinite tool loop detection
         const sameCallCount = recentToolCalls.filter(
           (tc) => tc.name === toolName && tc.args === argsKey,
         ).length;
@@ -478,13 +429,10 @@ export class Agent {
             toolName: formatToolCall(toolName, toolArgs),
           });
 
-          // Break out of the tool execution loop, which will also end the agent loop
           return;
         }
 
-        // Track this tool call
         recentToolCalls.push({ name: toolName, args: argsKey });
-        // Keep only the last MAX_SAME_TOOL_CALLS entries for detection
         if (recentToolCalls.length > MAX_SAME_TOOL_CALLS * 2) {
           recentToolCalls.splice(
             0,
@@ -498,7 +446,6 @@ export class Agent {
         const toolResult = executeTool(toolName, toolArgs);
 
         if (toolResult instanceof Promise) {
-          // Async tool with retry logic
           let lastError: Error | null = null;
           let succeeded = false;
 
@@ -538,7 +485,6 @@ export class Agent {
             });
           }
         } else {
-          // Sync tool — wrap in try-catch as well
           try {
             result = toolResult;
           } catch (error) {
@@ -552,14 +498,11 @@ export class Agent {
           }
         }
 
-        // Tool execution safety: detect "Error:" prefixed results from
-        // executeTool (which wraps errors as "Error: <message>")
         if (result.startsWith("Error:")) {
           logger.error("Tool returned an error result", {
             toolName,
             errorResult: result,
           });
-          // Wrap it in a consistent format so the LLM knows the tool failed
           result = `[Tool error: ${toolName} returned: ${result}]`;
         }
 
@@ -573,8 +516,6 @@ export class Agent {
           toolName: formatToolCall(toolName, toolArgs),
         });
       }
-
-      // Loop continues — next iteration will call LLM with tool results
     }
   }
 
@@ -655,5 +596,20 @@ export class Agent {
     for (const manager of this.messageManagers.values()) {
       manager.setMcpToolDescriptions(descriptions);
     }
+  }
+
+  // --- Chat persistence ---
+
+  getMessagesForSave(): ChatCompletionMessageParam[] {
+    return this.messages.getMessages();
+  }
+
+  restoreMessages(savedMessages: ChatCompletionMessageParam[]): void {
+    this.messages.restoreMessages(savedMessages);
+    logger.info("Chat restored", { messageCount: savedMessages.length });
+  }
+
+  getAgentMessages(): AgentMessage[] {
+    return this.messages.getAgentMessages();
   }
 }

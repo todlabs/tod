@@ -5,6 +5,18 @@ import { McpManager } from "./services/mcp-manager.js";
 import { configService } from "./services/config.js";
 import { logger } from "./services/logger.js";
 import { setMcpManager } from "./tools/index.js";
+import { loadChat, getCurrentChatId } from "./services/chat-storage.js";
+
+// Parse --resume <id> from CLI args
+const args = process.argv.slice(2);
+let resumeChatId: string | undefined;
+
+for (let i = 0; i < args.length; i++) {
+  if (args[i] === "--resume" && args[i + 1]) {
+    resumeChatId = args[i + 1];
+    break;
+  }
+}
 
 try {
   configService.getConfig();
@@ -52,6 +64,7 @@ if (hasMcpServers) {
 logger.info("Application initialized", {
   model: configService.getModel(),
   ui: "ink",
+  resume: resumeChatId || "none",
 });
 
 if (!process.stdin.isTTY) {
@@ -70,12 +83,27 @@ const { waitUntilExit } = render(
   React.default.createElement(App, {
     agent,
     mcpManager: hasMcpServers ? mcpManager : undefined,
-    version: "v1.3.0",
+    version: "v1.4.0",
+    resumeChatId,
   }),
 );
 
 await waitUntilExit();
+
+// Goodbye + resume hint
+const lastChatId = getCurrentChatId();
+if (lastChatId) {
+  const chat = loadChat(lastChatId);
+  const name = chat ? chat.name : lastChatId;
+  console.log(`\nGoodbye! Resume: tod --resume ${lastChatId}`);
+  if (chat && chat.name) {
+    console.log(`  (${name})`);
+  }
+  console.log();
+} else {
+  console.log("\nGoodbye!");
+}
+
 await mcpManager.shutdown();
 logger.info("Goodbye!");
-console.log("\nGoodbye!");
 process.exit(0);
