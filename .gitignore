@@ -37,6 +37,3 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.temp
-
-# TypeScript build script (not needed in dist)
-build.ts
