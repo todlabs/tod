@@ -7,8 +7,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/todlabs/tod/releases">
-    <img src="https://img.shields.io/github/v/release/todlabs/tod?style=flat-square&color=blue" alt="Version">
+  <a href="https://www.npmjs.com/package/@todlabs/tod">
+    <img src="https://img.shields.io/npm/v/@todlabs/tod?style=flat-square&color=blue" alt="npm">
   </a>
   <a href="https://github.com/todlabs/tod/blob/main/LICENSE">
     <img src="https://img.shields.io/github/license/todlabs/tod?style=flat-square&color=green" alt="License">
@@ -19,7 +19,7 @@
 </p>
 
 <p align="center">
-  <a href="#quick-start">Quick Start</a> •
+  <a href="#install">Install</a> •
   <a href="#commands">Commands</a> •
   <a href="#why-not-just">Why not just...</a> •
   <a href="#mcp">MCP</a>
@@ -27,30 +27,23 @@
 
 ---
 
-## The point
-
-TOD is simple. Open terminal, type what you need, get it done. No subscriptions, no vendor lock-in. Your key — your model.
-
-## Quick Start
+## Install
 
 ```bash
-git clone https://github.com/todlabs/tod.git
-cd tod
-bun install
-bun run build
-bun run start
+# npm
+npm i -g @todlabs/tod
+
+# bun
+bun i -g @todlabs/tod
+```
+
+Then run:
+
+```bash
+tod
 ```
 
 First launch — TOD asks for provider and API key. That's it.
-
-## Usage
-
-```
-> Create a React login component
-> @src/utils.js rewrite with async/await
-> /model
-> /clear
-```
 
 ## Commands
 
@@ -69,19 +62,7 @@ Also works: `/providers`, `/models`.
 
 ## Config
 
-Everything in `~/.tod/config.json`. Keys stay local, never sent anywhere.
-
-```json
-{
-  "activeProvider": "openai",
-  "providerConfigs": {
-    "openai": {
-      "apiKey": "sk-...",
-      "model": "gpt-4o-mini"
-    }
-  }
-}
-```
+`~/.tod/config.json` — keys stay local, never sent anywhere.
 
 Supported providers: Fireworks, OpenAI, Anthropic, OpenRouter — and any OpenAI-compatible API via custom baseURL.
 
@@ -93,7 +74,7 @@ Supported providers: Fireworks, OpenAI, Anthropic, OpenRouter — and any OpenAI
 
 **Cursor/Windsurf?** Those are IDEs, not terminals. TOD lives where you work — in the terminal. Zero overhead.
 
-Bottom line: TOD is just a tool. Not a product, not a service. Pick it up — use it.
+TOD is just a tool. Not a product, not a service. Pick it up — use it.
 
 ## MCP
 
@@ -106,7 +87,7 @@ Model Context Protocol support — connect external tools and services.
 
 ## Requirements
 
-- Bun 1.0+
+- Bun 1.0+ or Node 18+
 - API key from any supported provider
 
 ## License
