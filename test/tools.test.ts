@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { executeTool } from "../dist/tools/index.js";
+import { executeTool } from "../src/tools/index.js";
 
 describe("Tools", () => {
   test("execute_shell runs asynchronously", async () => {
