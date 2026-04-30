@@ -83,7 +83,7 @@ const { waitUntilExit } = render(
   React.default.createElement(App, {
     agent,
     mcpManager: hasMcpServers ? mcpManager : undefined,
-    version: "v1.4.0",
+    version: "v1.3.1",
     resumeChatId,
   }),
 );
