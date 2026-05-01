@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useRef } from "react";
 import { Box, Text, useInput } from "ink";
 import { useTerminalSize } from "../hooks/useTerminalSize.js";
 
@@ -8,7 +8,6 @@ interface MultilineInputProps {
   onSubmit: (value: string) => void;
   placeholder?: string;
   isDisabled?: boolean;
-  // Suggestion navigation — passed from App
   hasSuggestions?: boolean;
   selectedSuggestionIndex?: number;
   suggestionCount?: number;
@@ -19,9 +18,7 @@ interface MultilineInputProps {
 }
 
 const MAX_VISIBLE_LINES = 8;
-const PASTE_LINE_THRESHOLD = 3;
-const PASTE_CHAR_THRESHOLD = 150;
-const WRAP_INDENT = 2; // "  " prefix on wrapped lines
+const WRAP_INDENT = 2;
 
 export default function MultilineInput({
   value,
@@ -38,25 +35,32 @@ export default function MultilineInput({
   onEscape,
 }: MultilineInputProps) {
   const { columns: cols } = useTerminalSize();
+  const [cursor, setCursor] = useState(0); // cursor position in the string
 
-  // prefix "❯ " or "↩ " takes 2 terminal columns (rendered by InputArea)
-  // right edge needs 1 col for safety (cursor + padding quirks)
+  // Keep cursor in sync when value changes externally (e.g. setInput(""))
+  const prevValueRef = useRef(value);
+  if (prevValueRef.current !== value) {
+    // If value was reset or changed externally, snap cursor to end
+    const diff = value.length - prevValueRef.current.length;
+    if (diff < 0 && cursor > value.length) {
+      setCursor(value.length);
+    }
+    prevValueRef.current = value;
+  }
+
   const PREFIX_COLS = 2;
   const availableWidth = Math.max(10, cols - PREFIX_COLS - 1);
-
-  const [pasteLines, setPasteLines] = useState(0);
 
   const handleInput = useCallback(
     (input: string, key: any) => {
       if (isDisabled) return;
 
-      // ESC — close suggestions or handled by parent
       if (key.escape) {
         if (onEscape) onEscape();
         return;
       }
 
-      // Arrow navigation for suggestions (takes priority over text input)
+      // Arrow navigation for suggestions
       if (hasSuggestions) {
         if (key.upArrow) {
           onSuggestionNavigate?.("up");
@@ -78,48 +82,56 @@ export default function MultilineInput({
         }
       }
 
+      // Left/Right arrow — move cursor through text
+      if (key.leftArrow) {
+        setCursor((c) => Math.max(0, c - 1));
+        return;
+      }
+      if (key.rightArrow) {
+        setCursor((c) => Math.min(value.length, c + 1));
+        return;
+      }
+
+      // Home/End — jump to start/end
+      if (key.ctrl && input === "a") {
+        setCursor(0);
+        return;
+      }
+      if (key.ctrl && input === "e") {
+        setCursor(value.length);
+        return;
+      }
+
       if (key.return) {
         if (key.shift) {
-          const newValue = value + "\n";
+          const newValue = value.slice(0, cursor) + "\n" + value.slice(cursor);
           onChange(newValue);
-          const totalLines = newValue.split("\n").length;
-          setPasteLines(totalLines > PASTE_LINE_THRESHOLD ? totalLines : 0);
+          setCursor((c) => c + 1);
         } else {
-          setPasteLines(0);
+          setCursor(0);
           onSubmit(value);
         }
         return;
       }
 
-      if (key.backspace || key.delete) {
-        if (value.length > 0) {
-          const newValue = value.slice(0, -1);
+      if (key.backspace || key.delete || input === "\x08" || input === "\x7f") {
+        if (cursor > 0) {
+          const newValue = value.slice(0, cursor - 1) + value.slice(cursor);
           onChange(newValue);
-          const totalLines = newValue.split("\n").length;
-          setPasteLines(totalLines > PASTE_LINE_THRESHOLD ? totalLines : 0);
+          setCursor((c) => c - 1);
         }
         return;
       }
 
       if (input && !key.ctrl && !key.meta && !key.upArrow && !key.downArrow) {
-        const newValue = value + input;
-        const inputLineCount = input.split("\n").length;
-        const isPaste =
-          inputLineCount >= PASTE_LINE_THRESHOLD ||
-          input.length > PASTE_CHAR_THRESHOLD;
-
-        if (isPaste) {
-          setPasteLines(newValue.split("\n").length);
-        } else {
-          const totalLines = newValue.split("\n").length;
-          setPasteLines(totalLines > PASTE_LINE_THRESHOLD ? totalLines : 0);
-        }
-
+        const newValue = value.slice(0, cursor) + input + value.slice(cursor);
         onChange(newValue);
+        setCursor((c) => c + input.length);
       }
     },
     [
       value,
+      cursor,
       onChange,
       onSubmit,
       isDisabled,
@@ -146,23 +158,46 @@ export default function MultilineInput({
     );
   }
 
-  const showPasteTag = pasteLines > PASTE_LINE_THRESHOLD;
-
-  // Build visual lines with wrapping
+  // Build visual lines with cursor position tracking
   const rawLines = value.split("\n");
-  const visualLines: { text: string; isLast: boolean }[] = [];
+  const visualLines: { text: string; cursorCol?: number }[] = [];
 
-  const linesToShow = Math.min(
-    rawLines.length,
-    showPasteTag ? 2 : MAX_VISIBLE_LINES,
-  );
+  // Figure out which raw line the cursor is on and the column within it
+  let charsBeforeCursor = 0;
+  let cursorRawLine = 0;
+  let cursorColInLine = 0;
+  let acc = 0;
+  for (let i = 0; i < rawLines.length; i++) {
+    const lineLen = rawLines[i].length;
+    if (acc + lineLen >= cursor) {
+      cursorRawLine = i;
+      cursorColInLine = cursor - acc;
+      break;
+    }
+    acc += lineLen + 1; // +1 for \n
+  }
 
-  for (let li = 0; li < linesToShow; li++) {
+  const linesToShow = Math.min(rawLines.length, MAX_VISIBLE_LINES);
+
+  // Determine which lines to show (scroll if cursor is beyond visible area)
+  let startLine = 0;
+  if (cursorRawLine >= MAX_VISIBLE_LINES) {
+    startLine = cursorRawLine - MAX_VISIBLE_LINES + 1;
+  }
+
+  const hiddenBefore = startLine;
+  const endLine = Math.min(startLine + linesToShow, rawLines.length);
+  const hiddenAfter = rawLines.length - endLine;
+
+  for (let li = startLine; li < endLine; li++) {
     const line = rawLines[li];
-    const isLastRaw = li === rawLines.length - 1;
+    const isCursorLine = li === cursorRawLine;
 
     if (line.length === 0) {
-      visualLines.push({ text: "", isLast: isLastRaw });
+      visualLines.push({
+        text: "",
+        cursorCol: isCursorLine ? 0 : undefined,
+      });
       continue;
     }
 
@@ -171,63 +206,75 @@ export default function MultilineInput({
     while (pos < line.length) {
       const remaining = line.length - pos;
       const isWrapped = chunkIdx > 0;
-
-      // On wrapped lines, the "  " indent takes WRAP_INDENT chars,
-      // so the chunk itself must be shorter to stay within availableWidth
       const maxWidth = isWrapped
         ? availableWidth - WRAP_INDENT
         : availableWidth;
       let chunkLen = Math.min(remaining, maxWidth);
 
-      // Try word-wrap: break at the last space within the chunk
-      // so words don't get split mid-character across lines
       if (chunkLen < remaining && chunkLen > 1) {
         const probe = line.slice(pos, pos + chunkLen);
         const lastSpace = probe.lastIndexOf(" ");
         if (lastSpace > 0) {
-          // Break after the space (space goes on current line)
           chunkLen = lastSpace + 1;
         }
       }
 
       const chunk = line.slice(pos, pos + chunkLen);
       const isLastChunk = pos + chunkLen >= line.length;
-
       const displayText = isWrapped ? "  " + chunk : chunk;
-      visualLines.push({
-        text: displayText,
-        isLast: isLastRaw && isLastChunk,
-      });
 
+      // Calculate cursor column on this visual line
+      let curCol: number | undefined;
+      if (isCursorLine) {
+        const cursorInChunk =
+          cursorColInLine >= pos && cursorColInLine < pos + chunkLen;
+        const cursorAtEnd =
+          isLastChunk && cursorColInLine === pos + chunkLen;
+        if (cursorInChunk || cursorAtEnd) {
+          curCol =
+            (isWrapped ? WRAP_INDENT : 0) + (cursorColInLine - pos);
+        }
+      }
+
+      visualLines.push({ text: displayText, cursorCol: curCol });
       pos += chunkLen;
       chunkIdx++;
     }
-  }
 
-  const hiddenLines =
-    rawLines.length > linesToShow ? rawLines.length - linesToShow : 0;
+    // Cursor at end of line (after last char) on empty last chunk
+    if (isCursorLine && cursorColInLine === line.length) {
+      const lastVl = visualLines[visualLines.length - 1];
+      if (lastVl && lastVl.cursorCol === undefined) {
+        lastVl.cursorCol = lastVl.text.length;
+      }
+    }
+  }
 
   return (
     <Box flexDirection="column" flexGrow={1}>
+      {hiddenBefore > 0 && (
+        <Text color="gray" dimColor>
+          ... +{hiddenBefore} lines
+        </Text>
+      )}
       {visualLines.map((vl, idx) => (
         <Box key={idx}>
-          <Text>
-            {vl.text}
-            {vl.isLast && !showPasteTag && <Text inverse> </Text>}
-          </Text>
+          {vl.cursorCol !== undefined ? (
+            <>
+              <Text>{vl.text.slice(0, vl.cursorCol)}</Text>
+              <Text inverse>
+                {vl.text.slice(vl.cursorCol, vl.cursorCol + 1) || " "}
+              </Text>
+              <Text>{vl.text.slice(vl.cursorCol + 1)}</Text>
+            </>
+          ) : (
+            <Text>{vl.text}</Text>
+          )}
         </Box>
       ))}
-      {showPasteTag && (
-        <Box>
-          <Text color="cyan" bold>
-            ⋯{pasteLines}L
-          </Text>
-          <Text inverse> </Text>
-        </Box>
-      )}
-      {!showPasteTag && hiddenLines > 0 && (
+      {hiddenAfter > 0 && (
         <Text color="gray" dimColor>
-          ... +{hiddenLines} lines
+          ... +{hiddenAfter} lines
         </Text>
       )}
     </Box>

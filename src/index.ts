@@ -3,6 +3,7 @@
 import { Agent } from "./agent/index.js";
 import { McpManager } from "./services/mcp-manager.js";
 import { configService } from "./services/config.js";
+import { version as pkgVersion } from "../package.json";
 import { logger } from "./services/logger.js";
 import { setMcpManager } from "./tools/index.js";
 import { loadChat, getCurrentChatId } from "./services/chat-storage.js";
@@ -120,7 +121,7 @@ const { waitUntilExit } = render(
   React.default.createElement(App, {
     agent,
     mcpManager: hasMcpServers ? mcpManager : undefined,
-    version: "v1.4.0",
+    version: `v${pkgVersion}`,
     resumeChatId,
   }),
 );

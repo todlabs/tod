@@ -117,7 +117,7 @@ export class MessageManager {
 
     return this.messages
       .filter((msg) => msg.role !== 'system')
-      .map((msg) => {
+      .map((msg: any) => {
         if (msg.role === 'tool') {
           const content = typeof msg.content === 'string' ? msg.content : '';
           const truncated = content.length > MAX_TOOL_CONTENT
@@ -158,22 +158,52 @@ export class MessageManager {
   }
 
   getAgentMessages(): AgentMessage[] {
-    return this.messages.map((msg: any): AgentMessage => {
+    const result: AgentMessage[] = [];
+
+    for (const msg of this.messages) {
       const content = typeof msg.content === 'string' ? msg.content : (msg.content ? JSON.stringify(msg.content) : '');
+      const anyMsg = msg as any;
 
       if (msg.role === 'tool') {
-        return {
+        result.push({
           role: 'tool',
           content,
-          toolName: msg.name,
-        };
+          toolName: anyMsg.name,
+        });
+      } else if (msg.role === 'assistant' && anyMsg.tool_calls) {
+        // Show tool calls as compact entries (no output)
+        for (const tc of anyMsg.tool_calls) {
+          const toolName = tc.function?.name || 'unknown';
+          let toolArgs = '';
+          try {
+            const parsed = JSON.parse(tc.function?.arguments || '{}');
+            // Show key arg: path for file ops, command for shell
+            toolArgs = parsed.path || parsed.command || parsed.name || parsed.content?.substring(0, 40) || '';
+            if (toolArgs.length > 60) toolArgs = toolArgs.substring(0, 57) + '...';
+          } catch { /* ignore */ }
+          result.push({
+            role: 'tool',
+            content: '',
+            toolName,
+            toolArgs,
+          });
+        }
+        // Also add assistant text content if any
+        if (content) {
+          result.push({
+            role: 'assistant',
+            content,
+          });
+        }
+      } else {
+        result.push({
+          role: msg.role as 'user' | 'assistant' | 'system',
+          content,
+        });
       }
+    }
 
-      return {
-        role: msg.role as 'user' | 'assistant' | 'system',
-        content,
-      };
-    });
+    return result;
   }
 
   getConversationMessages(): ChatCompletionMessageParam[] {

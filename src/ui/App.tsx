@@ -5,6 +5,7 @@ import { join } from "path";
 import { Agent, type AgentMessage } from "../agent/index.js";
 import { configService } from "../services/config.js";
 import { findProjectRoot, getMemoryPath } from "../prompts/system.js";
+import { getSkillByName, discoverSkills, getSkillsDir, sanitizeSkillName } from "../services/skills.js";
 import {
   providers,
   getProvider,
@@ -23,7 +24,7 @@ import WorkingIndicator from "./components/WorkingIndicator.js";
 import { checkForUpdate } from "../services/update-check.js";
 import { useMessageProcessing } from "./hooks/useMessageProcessing.js";
 import {
-  commands,
+  getCommands,
   getCommandSuggestions,
   matchCommand,
   formatCommandName,
@@ -539,7 +540,7 @@ function App({ agent, mcpManager, version, resumeChatId }: AppProps) {
 
     const timer = setTimeout(() => {
       if (input.startsWith("/")) {
-        const cmds = getCommandSuggestions(input);
+        const cmds = getCommandSuggestions(input, process.cwd());
         setSuggestions(
           cmds.map((c) => ({
             type: "command",
@@ -805,7 +806,7 @@ function App({ agent, mcpManager, version, resumeChatId }: AppProps) {
   );
 
   function handleCommand(rawInput: string) {
-    const resolvedCmd = matchCommand(rawInput);
+    const resolvedCmd = matchCommand(rawInput, process.cwd());
     if (!resolvedCmd) {
       addSystemMessage("Unknown command. Type /help for available commands.");
       return;
@@ -869,7 +870,8 @@ function App({ agent, mcpManager, version, resumeChatId }: AppProps) {
         break;
       }
       case "/help": {
-        const helpText = commands
+        const allCmds = getCommands(process.cwd());
+        const helpText = allCmds
           .map((c) => `  ${formatCommandName(c).padEnd(28)} ${c.description}`)
           .join("\n");
         addSystemMessage(`Commands:\n\n${helpText}`);
@@ -881,6 +883,48 @@ function App({ agent, mcpManager, version, resumeChatId }: AppProps) {
       }
       case "/init": {
         handleInit();
+        break;
+      }
+      case "/skill": {
+        const skillArg = rawInput.replace(/^\/skill\s*/i, "").trim();
+        if (!skillArg) {
+          // List existing skills
+          const skills = discoverSkills(process.cwd());
+          if (skills.length === 0) {
+            addSystemMessage("No skills found. Create one: /skill <name> <description>");
+          } else {
+            const lines = skills.map((s) => {
+              const inv = s.invocation === "always" ? "always-on" : "on-demand";
+              return `  /${s.name}  ${s.description}  (${s.source}, ${inv})`;
+            });
+            addSystemMessage(`Skills:\n\n${lines.join("\n")}\n\nCreate: /skill <what you want>\nEdit: .tod/skills/<name>/SKILL.md`);
+          }
+        } else {
+          // Create a new skill — delegate to agent
+          const skillsDir = getSkillsDir(process.cwd());
+
+          const createPrompt = `Create a skill based on this request: "${skillArg}"
+
+Steps:
+1. Invent a short, descriptive skill name (lowercase, hyphenated, english — e.g. "auto-commit", "code-style", "deploy-check")
+2. Write a clear description of what the skill does
+3. Decide invocation: "always" if this is a rule the agent must always follow, "on-demand" if it's a procedure to invoke manually
+4. Write practical, step-by-step instructions in the body
+
+Create the file at ${skillsDir}/<name>/SKILL.md with this format:
+
+---
+description: <your description>
+invocation: <always or on-demand>
+---
+
+<step-by-step instructions>
+
+First create the directory with create_directory, then use write_file to create SKILL.md. Make it concise and actionable.`;
+
+          addSystemMessage(`Creating skill...`);
+          processMessage(createPrompt);
+        }
         break;
       }
       case "/remember": {
@@ -904,8 +948,23 @@ function App({ agent, mcpManager, version, resumeChatId }: AppProps) {
       case "/mcp":
         handleShowMcp();
         break;
-      default:
-        addSystemMessage(`Unknown command: ${resolvedCmd}`);
+      default: {
+        // Check if it's a skill command
+        const skillName = resolvedCmd.slice(1); // remove leading /
+        const skill = getSkillByName(process.cwd(), skillName);
+        if (skill) {
+          const userArgs = rawInput.replace(/^\/\S+\s*/, "").trim();
+          let prompt = skill.content;
+          if (userArgs) {
+            prompt += `\n\nAdditional context from user: ${userArgs}`;
+          }
+          addSystemMessage(`Running skill: /${skill.name}`);
+          processMessage(prompt);
+        } else {
+          addSystemMessage(`Unknown command: ${resolvedCmd}`);
+        }
+        break;
+      }
     }
   }
 
@@ -1073,6 +1132,7 @@ Write the file using the write_file tool. Make it concise and practical — this
         cleanMode={cleanMode}
         updateVersion={updateVersion}
       />
+      <Box height={1} />
     </Box>
   );
 }

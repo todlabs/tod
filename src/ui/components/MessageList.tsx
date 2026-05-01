@@ -67,6 +67,11 @@ export default function MessageList({
                 <Text color="green" bold>+</Text>
                 <Text color="gray"> </Text>
                 <Text color="green">{msg.toolName}</Text>
+                {(() => {
+                  const args = msg.toolArgs;
+                  if (!args || typeof args !== "string" || args.length === 0) return null;
+                  return <Text color="gray"> {args}</Text>;
+                })()}
               </Text>
               {msg.content.startsWith("Error:") && (
                 <Text color="red">{msg.content.substring(0, 120)}</Text>

@@ -7,6 +7,7 @@ import type { ChatCompletionTool } from "openai/resources/chat/completions";
 import { McpManager } from "../services/mcp-manager.js";
 import { logger } from "../services/logger.js";
 import { getMemoryPath, findProjectRoot } from "../prompts/system.js";
+import { getSkillByName } from "../services/skills.js";
 import type { DiffLine, DiffResult } from "../core/types.js";
 
 let mcpManager: McpManager | null = null;
@@ -117,12 +118,30 @@ export const tools: ChatCompletionTool[] = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "load_skill",
+      description: "Load a skill by name, or list all available skills. Skills contain project-specific instructions (code style, conventions, workflows, checklists). Call without arguments to see what skills are available, then load the relevant one before starting a task that matches its description.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: {
+            type: "string",
+            description: "Skill name (without / prefix). Leave empty to list all available skills.",
+          },
+        },
+        required: [],
+      },
+    },
+  },
 ];
 
 interface ToolArgs {
   path?: string;
   content?: string;
   command?: string;
+  name?: string;
 }
 
 const execAsync = util.promisify(exec);
@@ -285,6 +304,23 @@ export async function executeTool(
         appendFileSync(memoryPath, line, "utf-8");
         return { text: `Remembered: ${args.content.trim()}` };
 
+      case "load_skill": {
+        const { discoverSkills } = await import("../services/skills.js");
+        if (!args.name) {
+          // List all available skills
+          const skills = discoverSkills(process.cwd());
+          if (skills.length === 0) return { text: "No skills found. Create one with /skill <name> <description>" };
+          const lines = skills.map((s) => {
+            const inv = s.invocation === "always" ? "always-on" : "on-demand";
+            return `- ${s.name}: ${s.description} (${s.source}, ${inv})`;
+          });
+          return { text: `Available skills:\n${lines.join("\n")}\n\nLoad a skill with: load_skill("name")` };
+        }
+        const skill = getSkillByName(process.cwd(), args.name);
+        if (!skill) return { text: `Skill "${args.name}" not found. Call load_skill() without args to list available skills.` };
+        return { text: `Skill: ${skill.name}\nDescription: ${skill.description}\nInvocation: ${skill.invocation}\n\n${skill.content}` };
+      }
+
       default:
         if (mcpManager && mcpManager.isMcpTool(toolName)) {
           const result = await mcpManager.callTool(toolName, args as Record<string, unknown>);
@@ -315,6 +351,8 @@ export function formatToolCall(toolName: string, args: ToolArgs): string {
       return `Create directory "${args.path}"`;
     case "remember":
       return `Remember: ${(args.content || "").substring(0, 60)}`;
+    case "load_skill":
+      return `Load skill: ${args.name}`;
     default:
       if (mcpManager?.isMcpTool(toolName)) {
         const parsed = mcpManager.parseMcpToolName(toolName);

@@ -1,5 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
+import { getAlwaysOnSkillsContent } from "../services/skills.js";
 
 // Walk upwards from cwd to find project root (directory with .git, package.json, etc.)
 export function findProjectRoot(cwd: string): string {
@@ -89,6 +90,7 @@ export function getSystemPrompt(
   });
   const agentsMd = readAgentsMd(cwd);
   const memory = readMemory(cwd);
+  const alwaysOnSkills = getAlwaysOnSkillsContent(cwd);
   return `You are TOD - the world's most capable autonomous coding agent. You operate directly in the developer's terminal and solve real engineering tasks end-to-end without hand-holding.
 
 IDENTITY:
@@ -129,6 +131,7 @@ TOOLS:
 - list_directory(path) - list files and dirs
 - create_directory(path) - create directory
 - remember(content) - save a note to project memory (persists across sessions). Use this when the user asks you to remember something, or when you discover important project facts worth keeping.
+- load_skill(name?) - load a skill by name, or call without args to list available skills. Skills contain project-specific instructions (code style, conventions, workflows). Load relevant skills before starting a matching task.
 
 SHELL TIPS:
 - Prefer execute_shell for searching: grep -r "pattern" . --include="*.ts"
@@ -161,6 +164,12 @@ ${memory}`
 
 PROJECT INSTRUCTIONS (from AGENTS.md):
 ${agentsMd}`
+      : ""
+  }${
+    alwaysOnSkills
+      ? `
+
+${alwaysOnSkills}`
       : ""
   }`;
 }
