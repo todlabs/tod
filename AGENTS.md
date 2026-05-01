@@ -1,121 +1,86 @@
-# AGENTS — Release & Contribute Guide
+# AGENTS — Project Instructions
 
-## Версионирование
+## Project Overview
 
-Формат: `MAJOR.MINOR.PATCH` (SemVer)
+TOD (Tool of Dev) — AI coding agent in the terminal. Built with Bun, TypeScript, React Ink (TUI). Uses OpenAI-compatible API for LLM calls. Supports multiple providers (Fireworks, OpenAI, Anthropic, OpenRouter, etc.) and MCP (Model Context Protocol) for external tools.
 
-| Тип изменения | Что бампить | Пример |
-|---|---|---|
-| Багфикс, мелкий фикс CLI, правка текста | PATCH | `1.3.1` → `1.3.2` |
-| Новый инструмент, новый UI-компонент, новый провайдер | MINOR | `1.3.2` → `1.4.0` |
-| Рефактор ядра, ломающий совместимость | MAJOR | `1.4.0` → `2.0.0` |
+## Build & Test
 
-**Сейчас мы в режиме фиксов CLI — бампаем только PATCH.** Не прыгай на 1.4.0 без реальной новой фичи.
+- **Build**: `bun run build` (runs `build.ts`, bundles via Bun bundler, outputs to `dist/index.js` with shebang)
+- **Test**: `bun test` (uses `bun:test` runner; test file: `test/tools.test.ts`)
+- **Dev**: `bun run --watch src/index.ts` (hot-reload dev mode)
+- **Start**: `bun run dist/index.js` (after build)
+- **Full test**: `bun run build && bun test` (this is the `test` script — always build first)
+- **Type check**: `bunx tsc --noEmit` (strict mode in tsconfig)
+- **No linting configured** — no ESLint/Prettier config found
 
----
+## Code Style
 
-## Как выпустить обнову
+- **Language**: TypeScript (strict mode, ES2022 target, ESM modules)
+- **Runtime**: Bun (>=1.0) or Node 18+
+- **UI Framework**: React 18 + Ink 5 (terminal UI)
+- **Formatting**: No auto-formatter configured. Code uses 2-space indent, single quotes for strings, semicolons. Follow existing patterns.
+- **JSX**: React JSX (`"jsx": "react-jsx"` in tsconfig)
+- **Imports**: Always use `.js` extension in import paths (e.g., `import { Agent } from "./agent/index.js"`). This is required for ESM compatibility.
+- **Type style**: Prefer inline types and interfaces. Use Zod for runtime validation of config schemas.
+- **No decorators, no class properties** — simple TypeScript with interfaces and functions.
 
-### 1. Внести изменения
+## Conventions
 
-Правишь код. Пушить в `main` можно без тега — CI просто прогонит lint/build/test.
+- **File naming**: Lowercase, kebab-case for files (e.g., `useMessageProcessing.ts`, `mcp-manager.ts`). PascalCase for React components (e.g., `App.tsx`, `Header.tsx`, `MessageList.tsx`).
+- **Directory structure**:
+  - `src/agent/` — Core agent logic (LLM client, message management, agent orchestration)
+  - `src/core/` — Shared types and interfaces
+  - `src/services/` — Config, providers, MCP, chat storage, logging, update checks
+  - `src/tools/` — Tool definitions and execution (read_file, write_file, execute_shell, etc.)
+  - `src/ui/` — React Ink UI components and hooks
+  - `src/prompts/` — System prompt construction, AGENTS.md loading, project memory
+  - `src/config/` — Experimental config (minimal)
+  - `test/` — Test files (bun:test)
+  - `docs/` — MCP documentation in multiple languages
+  - `public/` — Static assets
+- **Import style**: Always use `.js` extension. ESM only (`"type": "module"` in package.json). No `require()`.
+- **Singleton pattern**: Services like `configService`, `logger` use singleton pattern (private constructor, `getInstance()`).
+- **Error handling**: Try/catch in tool execution, graceful fallback for MCP, config parsing with Zod validation.
+- **State management**: React hooks (`useState`, `useCallback`, `useRef`) — no Redux/Zustand.
 
-```bash
-git add .
-git commit -m "fix: описание что починил"
-git push origin main
-```
+## Important Files
 
-### 2. Обновить версию в package.json
+- **Entry point**: `src/index.ts` — CLI argument parsing, config loading, MCP init, launches Ink UI or non-interactive mode
+- **Build script**: `build.ts` — Bun bundler, creates single ESM output with shebang, stubs `react-devtools-core`
+- **Agent core**: `src/agent/` — `agent.ts` (Agent class), `llm-client.ts`, `message-manager.ts`, `types.ts`
+- **Tools**: `src/tools/index.ts` — Tool definitions, execution, diff computation. Tools: `read_file`, `write_file`, `execute_shell`, `list_directory`, `create_directory`, `remember`
+- **Config**: `src/services/config.ts` — `ConfigService` singleton, Zod schemas, `~/.tod/config.json`
+- **Providers**: `src/services/providers.ts` — Provider registry (Fireworks, Modal, NVIDIA, Air Force, SwiftRouter, AgentRouter, CanopyWave), dynamic model fetching
+- **MCP**: `src/services/mcp-manager.ts` — MCP server connection (stdio + remote), tool proxying
+- **UI**: `src/ui/App.tsx` — Main React Ink component, menus, suggestions, commands
+- **Commands**: `src/ui/commands.ts` — Slash commands (`/provider`, `/model`, `/clear`, `/compact`, `/resume`, `/init`, `/remember`, `/mcp`, `/help`, `/exit`)
+- **System prompt**: `src/prompts/system.ts` — Constructs system prompt, reads AGENTS.md and project memory
+- **Chat storage**: `src/services/chat-storage.ts` — Saves/loads chat sessions to `~/.tod/chats/`
+- **Tests**: `test/tools.test.ts` — Tests for tool execution and diff computation
 
-```bash
-# PATCH — для фиксов (сейчас только это)
-npm version patch --no-git-tag-version
-# это обновит "version" в package.json, например 1.3.1 → 1.3.2
+## Architecture
 
-# MINOR — только когда добавляешь новую фичу
-# npm version minor --no-git-tag-version
+- **Agent loop**: User message → `agent.processMessage()` → LLM streaming → tool calls → LLM response → tool execution → repeat until done
+- **Tool system**: 6 built-in tools + MCP tools. Tools return `ToolResult` with text and optional diff. `write_file` computes LCS diff.
+- **Streaming**: LLM responses stream via `onChunk` callback. Thinking tokens are separated from assistant content.
+- **MCP integration**: MCP tools are named `mcp__<server>__<tool>`. MCP server configs in `~/.tod/config.json`. Supports stdio and remote (HTTP) transports.
+- **Chat persistence**: Each conversation saved to `~/.tod/chats/<id>.json`. Resume with `--resume <id>` or `/resume`.
+- **Non-interactive mode**: `tod -p "prompt"` — runs single prompt, prints result to stdout, exits.
+- **UI architecture**: Ink (React for terminal). Components: Header, MessageList, InputArea, StatusBar, WorkingIndicator. Hooks: `useMessageProcessing`, `useTerminalSize`.
 
-# MAJOR — только при ломающих изменениях
-# npm version major --no-git-tag-version
-```
+## Gotchas
 
-Флаг `--no-git-tag-version` нужен, чтобы npm не создал тег сам — мы тегируем вручную.
-
-### 3. Закоммитить версию
-
-```bash
-git add package.json
-git commit -m "chore: bump version to $(node -p 'require(\"./package.json\").version')"
-```
-
-### 4. Пушить и поставить тег
-
-```bash
-git push origin main
-
-# Тег должен совпадать с версией из package.json
-git tag v1.3.2
-git push origin v1.3.2
-```
-
-**Тег `v*` — это триггер для обоих workflows.**
-
----
-
-## CI/CD — что происходит при пуше тега
-
-### `npm-publish.yml`
-Срабатывает при `push tags: v*`. Делает:
-1. Checkout + Bun + Node 20
-2. `bun install --frozen-lockfile`
-3. `tsc --noEmit` — проверка типов
-4. `bun run build` — сборка в `dist/`
-5. `bun test` — тесты
-6. `npm publish --access public` — публикация в npm
-
-**Требует секрет `NPM_TOKEN`** в репозитории (Settings → Secrets → Actions).
-
-### `ci.yml` (release job)
-Срабатывает при `push tags: v*`. Делает:
-1. То же, что CI при пуше в main (lint, build, test)
-2. Создаёт GitHub Release через `softprops/action-gh-release@v1` с файлами из `dist/`
-
----
-
-## Чеклист перед релизом
-
-- [ ] Код закоммичен в `main`
-- [ ] `package.json` версия обновлена (patch/minor/major)
-- [ ] Версия закоммичена отдельным коммитом
-- [ ] Тег `vX.Y.Z` создан и запушен
-- [ ] GitHub Action прошёл (вкладка Actions)
-- [ ] Пакет появился на npm: https://www.npmjs.com/package/@todlabs/tod
-- [ ] GitHub Release создан с артефактами
-
----
-
-## Частые ошибки
-
-| Проблема | Решение |
-|---|---|
-| npm publish падает с 403 | Проверь `NPM_TOKEN` в секретах репозитория |
-| Тег не триггерит workflow | Убедись что тег начинается с `v` (не `1.3.2`, а `v1.3.2`) |
-| Версия на npm не обновилась | Проверь что `package.json` версия совпадает с тегом |
-| CI падает на tsc | Запусти `bunx tsc --noEmit` локально перед пушем |
-| Забыл `--no-git-tag-version` | `npm version` создаст тег сам — удали: `git tag -d vX.Y.Z && git push origin :refs/tags/vX.Y.Z` |
-
----
-
-## Быстрый скрипт
-
-Одной строкой — bump, commit, tag, push:
-
-```bash
-npm version patch --no-git-tag-version && \
-git add package.json && \
-git commit -m "chore: bump version to $(node -p 'require(\"./package.json\").version')" && \
-git push origin main && \
-git tag "v$(node -p 'require(\"./package.json\").version')" && \
-git push origin "v$(node -p 'require(\"./package.json\").version')"
-```
+- **Import extensions**: Always use `.js` in import paths (e.g., `./agent/index.js`), not `.ts`. TypeScript compiles to ESM and `.js` extension is required.
+- **react-devtools-core stub**: Build creates a stub for `react-devtools-core` in `dist/node_modules/` because Ink has it as optional dependency. Don't remove this from `build.ts`.
+- **Shebang**: Build script prepends `#!/usr/bin/env node` to the output. The compiled JS runs as a Node/Bun script.
+- **No runtime dependencies**: All deps are devDependencies. Everything is bundled into `dist/index.js`. `node_modules` not needed at runtime.
+- **Config location**: `~/.tod/config.json` — not in project directory. Chat storage in `~/.tod/chats/`. Memory in `.tod/memory.md` in project root.
+- **Logger disabled by default**: `enabled = false` in Logger class. Only logs in development mode.
+- **Tool execution timeout**: `execute_shell` has 120s timeout and 10MB buffer.
+- **Diff algorithm**: LCS-based diff in `computeDiff()` — O(m*n) space, fine for typical files. Only shows 3 context lines around changes.
+- **Agent busy state**: `agent.isBusy()` / `agent.forceUnstick()` — agent can get stuck if error during tool execution. UI handles this with force-unstick.
+- **Auto-compact**: Optional feature (off by default). When context reaches 80% of model's max context, auto-compacts conversation.
+- **MCP tool naming**: MCP tools are prefixed with `mcp__<serverName>__<toolName>`. Regular tools have no prefix.
+- **Provider env vars**: `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL`, `MAX_TOKENS`, `TEMPERATURE` override config file values.
+- **Chat IDs**: Generated from `Date.now().toString(36)` + random suffix. Resume hint shown on exit.

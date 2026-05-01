@@ -928,39 +928,24 @@ function App({ agent, mcpManager, version, resumeChatId }: AppProps) {
     const agentsPath = join(root, "AGENTS.md");
 
     if (existsSync(agentsPath)) {
-      addSystemMessage(`AGENTS.md already exists at ${agentsPath}`);
-      return;
+      addSystemMessage("AGENTS.md already exists — asking agent to update it...");
     }
 
-    const template = `# AGENTS — Project Instructions
+    const initPrompt = `Analyze this project and create a useful AGENTS.md file at ${agentsPath}.
 
-## Build & Test
-- Build:
-- Test:
-- Lint:
+Look at the project structure, package.json / cargo.toml / pyproject.toml, build scripts, test setup, linting config, existing source files, and any existing documentation. Then write an AGENTS.md that contains REAL, SPECIFIC information — not placeholders.
 
-## Code Style
-- Language:
-- Framework:
+Include sections like:
+- **Build & Test**: exact commands (e.g. "bun run build", "bun test", "bunx tsc --noEmit")
+- **Code Style**: language, framework, formatting rules you observe from existing code
+- **Conventions**: file naming patterns, import style, directory structure
+- **Important Files**: entry points, config files, key modules
+- **Architecture**: how the codebase is organized, key abstractions
+- **Gotchas**: anything non-obvious about this project
 
-## Conventions
-- File naming:
-- Import style:
+Write the file using the write_file tool. Make it concise and practical — this file helps AI agents work effectively in this codebase.`;
 
-## Important Files
-- Entry point:
-- Config:
-
-## Notes
-
-`;
-
-    try {
-      writeFileSync(agentsPath, template, "utf-8");
-      addSystemMessage(`Created AGENTS.md at ${agentsPath}`);
-    } catch (error) {
-      addSystemMessage(`Failed to create AGENTS.md: ${error instanceof Error ? error.message : String(error)}`);
-    }
+    processMessage(initPrompt);
   };
 
   const handleShowMcp = () => {
