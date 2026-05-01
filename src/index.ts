@@ -7,23 +7,100 @@ import { version as pkgVersion } from "../package.json";
 import { logger } from "./services/logger.js";
 import { setMcpManager } from "./tools/index.js";
 import { loadChat, getCurrentChatId } from "./services/chat-storage.js";
+import { spawn, spawnSync } from "child_process";
 
 // Parse CLI args
 const args = process.argv.slice(2);
 let resumeChatId: string | undefined;
 let promptArg: string | undefined;
 
+// Top-level subcommands
+const firstArg = args[0];
+if (firstArg === "upgrade" || firstArg === "update") {
+  await runUpgrade();
+  process.exit(0);
+}
+if (firstArg === "--version" || firstArg === "-v") {
+  console.log(`v${pkgVersion}`);
+  process.exit(0);
+}
+
 for (let i = 0; i < args.length; i++) {
   if ((args[i] === "--resume" || args[i] === "-r") && args[i + 1]) {
     resumeChatId = args[i + 1];
-    i++; // skip the value
+    i++;
     continue;
   }
   if ((args[i] === "--prompt" || args[i] === "-p") && args[i + 1]) {
     promptArg = args[i + 1];
-    i++; // skip the value
+    i++;
     continue;
   }
+}
+
+async function runUpgrade(): Promise<void> {
+  console.log(`\n  Current version: v${pkgVersion}`);
+  console.log("  Checking for updates...\n");
+
+  // Find the best package manager available
+  const managers = [
+    { cmd: "bun", args: ["add", "-g", "@todlabs/tod@latest"] },
+    { cmd: "npm", args: ["install", "-g", "@todlabs/tod@latest"] },
+  ];
+
+  let chosen: (typeof managers)[number] | null = null;
+  for (const m of managers) {
+    try {
+      const probe = spawnSync(m.cmd, ["--version"], {
+        stdio: "ignore",
+        shell: process.platform === "win32",
+      });
+      if (probe.status === 0) {
+        chosen = m;
+        break;
+      }
+    } catch {
+      /* try next */
+    }
+  }
+
+  if (!chosen) {
+    console.error("  No package manager found (npm or bun). Install one first.");
+    process.exit(1);
+  }
+
+  console.log(`  Running: ${chosen.cmd} ${chosen.args.join(" ")}\n`);
+
+  const result = spawnSync(chosen.cmd, chosen.args, {
+    stdio: "inherit",
+    shell: process.platform === "win32",
+  });
+
+  if (result.status !== 0) {
+    console.error(`\n  Upgrade failed (exit code ${result.status})`);
+    process.exit(result.status || 1);
+  }
+
+  console.log("\n  Upgrade complete. Starting tod...\n");
+
+  // Spawn a fresh tod and detach — our process will exit after
+  const child = spawn("tod", [], {
+    stdio: "inherit",
+    shell: process.platform === "win32",
+    detached: false,
+  });
+
+  child.on("exit", (code) => {
+    process.exit(code ?? 0);
+  });
+
+  child.on("error", (err) => {
+    console.error("  Could not start tod:", err.message);
+    process.exit(1);
+  });
+
+  // Prevent our process from exiting before child finishes
+  await new Promise(() => {});
 }
 
 try {

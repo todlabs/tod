@@ -31,7 +31,7 @@ export default function MessageList({
           {msg.role === "user" && (
             <Box>
               <Text color="gray">▸ </Text>
-              <Text color="white">{msg.content}</Text>
+              <Text color="white" wrap="wrap">{msg.content}</Text>
             </Box>
           )}
 
@@ -41,7 +41,7 @@ export default function MessageList({
                 ◇ thinking{" "}
                 {msg.thinkingTime ? formatThinkingTime(msg.thinkingTime) : ""}
               </Text>
-              <Text color="gray" dimColor>
+              <Text color="gray" dimColor wrap="wrap">
                 {ITALIC}
                 {msg.content.length <= 400
                   ? msg.content
@@ -63,7 +63,7 @@ export default function MessageList({
 
           {msg.role === "tool" && !msg.diff && msg.toolName && (
             <Box flexDirection="column">
-              <Text>
+              <Text wrap="truncate">
                 <Text color="green" bold>+</Text>
                 <Text color="gray"> </Text>
                 <Text color="green">{msg.toolName}</Text>
@@ -74,7 +74,7 @@ export default function MessageList({
                 })()}
               </Text>
               {msg.content.startsWith("Error:") && (
-                <Text color="red">{msg.content.substring(0, 120)}</Text>
+                <Text color="red" wrap="truncate-end">{msg.content.substring(0, 120)}</Text>
               )}
             </Box>
           )}
@@ -87,7 +87,7 @@ export default function MessageList({
           <Text color="gray" dimColor>
             ◇ thinking{thinking.length > 0 ? ` ${thinking.length}` : ""}
           </Text>
-          <Text color="gray" dimColor>
+          <Text color="gray" dimColor wrap="wrap">
             {ITALIC}
             {thinking.length <= 400
               ? thinking

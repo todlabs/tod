@@ -3,7 +3,7 @@ import * as path from "path";
 import * as os from "os";
 import { logger } from "./logger.js";
 
-const PKG_NAME = "@todlabs/tod";
+const GITHUB_REPO = "todlabs/tod";
 const CACHE_TTL = 1000 * 60 * 60 * 24; // 24h
 
 interface CacheEntry {
@@ -51,10 +51,16 @@ function semverGt(a: string, b: string): boolean {
   return false;
 }
 
+function stripVersionPrefix(tag: string): string {
+  return tag.replace(/^v/, "");
+}
+
 let checked = false;
 let updateAvailable: string | null = null;
 
-export async function checkForUpdate(currentVersion: string): Promise<string | null> {
+export async function checkForUpdate(
+  currentVersion: string,
+): Promise<string | null> {
   if (checked) return updateAvailable;
   checked = true;
 
@@ -68,15 +74,33 @@ export async function checkForUpdate(currentVersion: string): Promise<string | n
     return null;
   }
 
-  // Fetch from npm registry
+  // Fetch from GitHub releases API — latest non-draft release
   try {
-    const res = await fetch(`https://registry.npmjs.org/${PKG_NAME}/latest`, {
-      signal: AbortSignal.timeout(5000),
-    });
-    if (!res.ok) return null;
-    const json = (await res.json()) as { version?: string };
-    const latest = json.version;
-    if (!latest) return null;
+    const res = await fetch(
+      `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`,
+      {
+        signal: AbortSignal.timeout(5000),
+        headers: {
+          Accept: "application/vnd.github+json",
+          "User-Agent": "tod-cli",
+        },
+      },
+    );
+    if (!res.ok) {
+      logger.debug("GitHub releases fetch non-ok", { status: res.status });
+      return null;
+    }
+    const json = (await res.json()) as {
+      tag_name?: string;
+      draft?: boolean;
+      prerelease?: boolean;
+    };
+
+    if (json.draft || json.prerelease) return null;
+
+    const tag = json.tag_name;
+    if (!tag) return null;
+    const latest = stripVersionPrefix(tag);
 
     writeCache(latest);
 
@@ -85,8 +109,10 @@ export async function checkForUpdate(currentVersion: string): Promise<string | n
       logger.info("Update available", { current: currentVersion, latest });
       return updateAvailable;
     }
-  } catch {
-    /* ignore — offline is fine */
+  } catch (err) {
+    logger.debug("Update check failed", {
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
 
   return null;

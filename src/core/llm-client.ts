@@ -12,7 +12,11 @@ export class LLMClient {
     this.openai = new OpenAI({
       apiKey: config.apiKey,
       baseURL: config.baseURL,
-      timeout: 120_000,
+      // 15 minutes — reasoning models (o1, deepseek-r1, mimimo) can think 3-5+ min
+      // We rely on AbortController for user cancellation
+      timeout: 15 * 60 * 1000,
+      // Disable OpenAI's internal retries — we handle them ourselves
+      maxRetries: 0,
       defaultHeaders: config.headers || {},
     });
 

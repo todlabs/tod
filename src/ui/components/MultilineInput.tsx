@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef } from "react";
+import React, { useState, useCallback, useEffect } from "react";
 import { Box, Text, useInput } from "ink";
 import { useTerminalSize } from "../hooks/useTerminalSize.js";
 
@@ -18,7 +18,6 @@ interface MultilineInputProps {
 }
 
 const MAX_VISIBLE_LINES = 8;
-const WRAP_INDENT = 2;
 
 export default function MultilineInput({
   value,
@@ -35,21 +34,48 @@ export default function MultilineInput({
   onEscape,
 }: MultilineInputProps) {
   const { columns: cols } = useTerminalSize();
-  const [cursor, setCursor] = useState(0); // cursor position in the string
+  const [cursor, setCursor] = useState(0);
 
-  // Keep cursor in sync when value changes externally (e.g. setInput(""))
-  const prevValueRef = useRef(value);
-  if (prevValueRef.current !== value) {
-    // If value was reset or changed externally, snap cursor to end
-    const diff = value.length - prevValueRef.current.length;
-    if (diff < 0 && cursor > value.length) {
+  // Clamp cursor when value changes externally (e.g., setInput("") or paste)
+  useEffect(() => {
+    if (cursor > value.length) {
       setCursor(value.length);
     }
-    prevValueRef.current = value;
-  }
+  }, [value, cursor]);
 
-  const PREFIX_COLS = 2;
-  const availableWidth = Math.max(10, cols - PREFIX_COLS - 1);
+  // App has paddingLeft=1 + paddingRight=1 (2 cols).
+  // InputArea has "# " prefix (2 cols). Cursor reserves 1 col.
+  // Total reserved: 5 cols to be safe.
+  const RESERVED_COLS = 5;
+  const availableWidth = Math.max(10, cols - RESERVED_COLS);
+
+  // Helper: find cursor position on previous/next line (for Up/Down arrows)
+  const moveCursorVertical = useCallback(
+    (direction: "up" | "down") => {
+      const lines = value.split("\n");
+      let acc = 0;
+      let curLine = 0;
+      let curCol = 0;
+      for (let i = 0; i < lines.length; i++) {
+        if (acc + lines[i].length >= cursor) {
+          curLine = i;
+          curCol = cursor - acc;
+          break;
+        }
+        acc += lines[i].length + 1;
+      }
+
+      const targetLine = direction === "up" ? curLine - 1 : curLine + 1;
+      if (targetLine < 0 || targetLine >= lines.length) return false;
+
+      let newPos = 0;
+      for (let i = 0; i < targetLine; i++) newPos += lines[i].length + 1;
+      newPos += Math.min(curCol, lines[targetLine].length);
+      setCursor(newPos);
+      return true;
+    },
+    [value, cursor],
+  );
 
   const handleInput = useCallback(
     (input: string, key: any) => {
@@ -60,7 +86,7 @@ export default function MultilineInput({
         return;
       }
 
-      // Arrow navigation for suggestions
+      // Suggestion navigation — only if suggestions active
       if (hasSuggestions) {
         if (key.upArrow) {
           onSuggestionNavigate?.("up");
@@ -82,7 +108,7 @@ export default function MultilineInput({
         }
       }
 
-      // Left/Right arrow — move cursor through text
+      // Cursor navigation
       if (key.leftArrow) {
         setCursor((c) => Math.max(0, c - 1));
         return;
@@ -91,14 +117,52 @@ export default function MultilineInput({
         setCursor((c) => Math.min(value.length, c + 1));
         return;
       }
+      if (key.upArrow) {
+        moveCursorVertical("up");
+        return;
+      }
+      if (key.downArrow) {
+        moveCursorVertical("down");
+        return;
+      }
 
-      // Home/End — jump to start/end
+      // Ctrl+A / Home → start, Ctrl+E / End → end
       if (key.ctrl && input === "a") {
         setCursor(0);
         return;
       }
       if (key.ctrl && input === "e") {
         setCursor(value.length);
+        return;
+      }
+
+      // Ctrl+U — delete to start of line
+      if (key.ctrl && input === "u") {
+        const lineStart = value.lastIndexOf("\n", cursor - 1) + 1;
+        const newValue = value.slice(0, lineStart) + value.slice(cursor);
+        onChange(newValue);
+        setCursor(lineStart);
+        return;
+      }
+
+      // Ctrl+K — delete to end of line
+      if (key.ctrl && input === "k") {
+        const nextNl = value.indexOf("\n", cursor);
+        const lineEnd = nextNl === -1 ? value.length : nextNl;
+        const newValue = value.slice(0, cursor) + value.slice(lineEnd);
+        onChange(newValue);
+        return;
+      }
+
+      // Ctrl+W — delete word before cursor
+      if (key.ctrl && input === "w") {
+        if (cursor === 0) return;
+        let wordStart = cursor - 1;
+        while (wordStart > 0 && /\s/.test(value[wordStart])) wordStart--;
+        while (wordStart > 0 && !/\s/.test(value[wordStart - 1])) wordStart--;
+        const newValue = value.slice(0, wordStart) + value.slice(cursor);
+        onChange(newValue);
+        setCursor(wordStart);
         return;
       }
 
@@ -114,7 +178,14 @@ export default function MultilineInput({
         return;
       }
 
-      if (key.backspace || key.delete || input === "\x08" || input === "\x7f") {
+      // Backspace — on Windows Ink sends it as key.delete (0x7F).
+      // We treat both as "delete char before cursor".
+      if (
+        key.backspace ||
+        key.delete ||
+        input === "\x08" ||
+        input === "\x7f"
+      ) {
         if (cursor > 0) {
           const newValue = value.slice(0, cursor - 1) + value.slice(cursor);
           onChange(newValue);
@@ -123,7 +194,17 @@ export default function MultilineInput({
         return;
       }
 
-      if (input && !key.ctrl && !key.meta && !key.upArrow && !key.downArrow) {
+      // Regular text input — ignore control keys and navigation
+      if (
+        input &&
+        !key.ctrl &&
+        !key.meta &&
+        !key.upArrow &&
+        !key.downArrow &&
+        !key.leftArrow &&
+        !key.rightArrow &&
+        !key.escape
+      ) {
         const newValue = value.slice(0, cursor) + input + value.slice(cursor);
         onChange(newValue);
         setCursor((c) => c + input.length);
@@ -142,6 +223,7 @@ export default function MultilineInput({
       onSuggestionFill,
       onSuggestionExecute,
       onEscape,
+      moveCursorVertical,
     ],
   );
 
@@ -158,12 +240,11 @@ export default function MultilineInput({
     );
   }
 
-  // Build visual lines with cursor position tracking
+  // Build visual lines with cursor position
   const rawLines = value.split("\n");
   const visualLines: { text: string; cursorCol?: number }[] = [];
 
-  // Figure out which raw line the cursor is on and the column within it
-  let charsBeforeCursor = 0;
+  // Find cursor's raw line and column
   let cursorRawLine = 0;
   let cursorColInLine = 0;
   let acc = 0;
@@ -174,12 +255,11 @@ export default function MultilineInput({
       cursorColInLine = cursor - acc;
       break;
     }
-    acc += lineLen + 1; // +1 for \n
+    acc += lineLen + 1;
   }
 
   const linesToShow = Math.min(rawLines.length, MAX_VISIBLE_LINES);
 
-  // Determine which lines to show (scroll if cursor is beyond visible area)
   let startLine = 0;
   if (cursorRawLine >= MAX_VISIBLE_LINES) {
     startLine = cursorRawLine - MAX_VISIBLE_LINES + 1;
@@ -205,11 +285,7 @@ export default function MultilineInput({
     let chunkIdx = 0;
     while (pos < line.length) {
       const remaining = line.length - pos;
-      const isWrapped = chunkIdx > 0;
-      const maxWidth = isWrapped
-        ? availableWidth - WRAP_INDENT
-        : availableWidth;
-      let chunkLen = Math.min(remaining, maxWidth);
+      let chunkLen = Math.min(remaining, availableWidth);
 
       if (chunkLen < remaining && chunkLen > 1) {
         const probe = line.slice(pos, pos + chunkLen);
@@ -221,9 +297,7 @@ export default function MultilineInput({
 
       const chunk = line.slice(pos, pos + chunkLen);
       const isLastChunk = pos + chunkLen >= line.length;
-      const displayText = isWrapped ? "  " + chunk : chunk;
 
-      // Calculate cursor column on this visual line
       let curCol: number | undefined;
       if (isCursorLine) {
         const cursorInChunk =
@@ -231,17 +305,15 @@ export default function MultilineInput({
         const cursorAtEnd =
           isLastChunk && cursorColInLine === pos + chunkLen;
         if (cursorInChunk || cursorAtEnd) {
-          curCol =
-            (isWrapped ? WRAP_INDENT : 0) + (cursorColInLine - pos);
+          curCol = cursorColInLine - pos;
         }
       }
 
-      visualLines.push({ text: displayText, cursorCol: curCol });
+      visualLines.push({ text: chunk, cursorCol: curCol });
       pos += chunkLen;
       chunkIdx++;
     }
 
-    // Cursor at end of line (after last char) on empty last chunk
     if (isCursorLine && cursorColInLine === line.length) {
       const lastVl = visualLines[visualLines.length - 1];
       if (lastVl && lastVl.cursorCol === undefined) {

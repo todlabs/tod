@@ -426,8 +426,14 @@ function App({ agent, mcpManager, version, resumeChatId }: AppProps) {
 
   // Check for updates on startup
   useEffect(() => {
-    checkForUpdate(version.replace(/^v/, "")).then((v) => {
-      if (v) setUpdateVersion(v);
+    const currentVersion = version.replace(/^v/, "");
+    checkForUpdate(currentVersion).then((v) => {
+      if (v) {
+        setUpdateVersion(v);
+        addSystemMessage(
+          `✦ Update available: v${currentVersion} → v${v}\n  Run: npm i -g @todlabs/tod`,
+        );
+      }
     });
   }, []);
 
@@ -482,8 +488,14 @@ function App({ agent, mcpManager, version, resumeChatId }: AppProps) {
       pendingCompactRef.current = true;
       compactMessages()
         .then((result) => {
+          const savedPct = Math.round(
+            ((result.oldTokens - result.newTokens) / result.oldTokens) * 100,
+          );
+          const newPct = Math.round(
+            (result.newTokens / maxContext) * 100,
+          );
           addSystemMessage(
-            `Auto-compacted: ${pct}% → ${Math.round((result.newTokens / maxContext) * 100)}% (saved ${Math.round(((result.oldTokens - result.newTokens) / result.oldTokens) * 100)}%)`,
+            `◆ auto-compacted\n  ${pct}% → ${newPct}% of context  ·  −${savedPct}%`,
           );
           pendingCompactRef.current = false;
         })
@@ -969,15 +981,25 @@ First create the directory with create_directory, then use write_file to create 
   }
 
   const handleCompactContext = async () => {
-    addSystemMessage("Compacting context...");
+    const startMsg = "◇ compacting context...";
+    addSystemMessage(startMsg);
     try {
       const result = await compactMessages();
+      const savedPct = Math.round(
+        ((result.oldTokens - result.newTokens) / result.oldTokens) * 100,
+      );
+      const fmt = (n: number) => {
+        if (n >= 1000) return (n / 1000).toFixed(1) + "k";
+        return n.toString();
+      };
+      const before = fmt(result.oldTokens);
+      const after = fmt(result.newTokens);
       addSystemMessage(
-        `Context compacted: ${result.oldTokens}t → ${result.newTokens}t (saved ${Math.round(((result.oldTokens - result.newTokens) / result.oldTokens) * 100)}%)`,
+        `◆ context compacted\n  ${before} → ${after} tokens  ·  −${savedPct}%`,
       );
     } catch (error) {
       addSystemMessage(
-        `Failed to compact: ${error instanceof Error ? error.message : String(error)}`,
+        `✗ compact failed: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
   };

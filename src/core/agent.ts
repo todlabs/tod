@@ -22,7 +22,9 @@ const MAX_AGENT_ITERATIONS = 25;
 const MAX_TOOL_RETRIES = 2;
 const MAX_SAME_TOOL_CALLS = 3;
 const MAX_PROCESS_MESSAGE_RETRIES = 2;
-const ZOMBIE_GUARD_TIMEOUT_MS = 5 * 60 * 1000;
+// 10 minutes of silence (no chunks at all) = something is truly stuck.
+// Reset on every chunk, so reasoning models that stream thinking won't trigger it.
+const ZOMBIE_GUARD_TIMEOUT_MS = 10 * 60 * 1000;
 
 export function isRetryableError(error: unknown): boolean {
   if (!(error instanceof Error)) {
@@ -163,10 +165,11 @@ export class Agent {
     this.zombieGuardTimer = setTimeout(() => {
       if (this.isProcessing) {
         logger.error(
-          "Zombie guard fired — agent stuck for too long, force-releasing",
+          "Zombie guard fired — agent silent for too long, force-releasing",
           {
             isProcessing: this.isProcessing,
             hadAbortController: this.abortController !== null,
+            timeoutMs: ZOMBIE_GUARD_TIMEOUT_MS,
           },
         );
 
@@ -180,6 +183,16 @@ export class Agent {
 
     if (this.zombieGuardTimer.unref) {
       this.zombieGuardTimer.unref();
+    }
+  }
+
+  /**
+   * Reset zombie guard timer — called on every stream chunk so long-thinking
+   * reasoning models don't trigger the guard. Only fires if truly silent.
+   */
+  private resetZombieGuard(): void {
+    if (this.isProcessing) {
+      this.startZombieGuard();
     }
   }
 
@@ -308,6 +321,10 @@ export class Agent {
             signal,
           )) {
             if (signal?.aborted) break;
+
+            // Reset zombie guard on every chunk — reasoning models may
+            // stream thinking for minutes, that's not stuck
+            this.resetZombieGuard();
 
             if (chunk.thinking) {
               callbacks.onChunk({
@@ -567,6 +584,9 @@ export class Agent {
           toolName: formatToolCall(toolName, toolArgs),
           diff: toolRes.diff,
         });
+
+        // Reset zombie guard after tool completes — tools can take a while
+        this.resetZombieGuard();
       }
     }
   }
