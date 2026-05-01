@@ -1,5 +1,6 @@
 import React from "react";
 import { Box, Text } from "ink";
+import { useTerminalSize } from "../hooks/useTerminalSize.js";
 
 function parseInline(text: string, baseKey: string): React.ReactNode {
   const parts: React.ReactNode[] = [];
@@ -49,13 +50,17 @@ interface MarkdownTextProps {
   children: string;
   color?: string;
   dimColor?: boolean;
+  width?: number;
 }
 
 export default function MarkdownText({
   children,
   color,
   dimColor,
+  width,
 }: MarkdownTextProps) {
+  const { columns } = useTerminalSize();
+  const usableWidth = width ?? Math.max(20, columns - 4);
   const lines = children.split("\n");
   const elements: React.ReactNode[] = [];
   let i = 0;
@@ -154,7 +159,7 @@ export default function MarkdownText({
     if (/^[-_*]{3,}$/.test(line.trim())) {
       elements.push(
         <Text key={`hr-${i}`} color="gray" dimColor>
-          {"─".repeat(40)}
+          {"─".repeat(Math.max(10, usableWidth - 2))}
         </Text>,
       );
       i++;

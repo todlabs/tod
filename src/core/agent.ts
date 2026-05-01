@@ -15,6 +15,7 @@ import {
   formatToolCall,
   getMcpTools,
 } from "../tools/index.js";
+import type { ToolResult } from "../tools/index.js";
 import { logger } from "../services/logger.js";
 
 const MAX_AGENT_ITERATIONS = 25;
@@ -83,6 +84,31 @@ function sleepWithAbort(
 export interface AgentProcessCallbacks {
   onChunk: (chunk: AgentMessage) => void;
   onToolCall: (toolName: string, args: unknown) => void;
+  onToolCallStart?: (toolName: string, args: Partial<Record<string, unknown>>) => void;
+  onToolApproval?: (toolName: string, args: Record<string, unknown>) => boolean;
+}
+
+// Dangerous shell command patterns that require approval
+const DANGEROUS_SHELL_PATTERNS = [
+  /\brm\s+(-rf?|-fr?|--force)/,
+  /\bgit\s+push\s+.*--force/,
+  /\bgit\s+push\s+.*-f\b/,
+  /\bnpm\s+publish/,
+  /\bdocker\s+rm/,
+  /\bmkfs\b/,
+  /\bdd\s+/,
+  /\bchmod\s+-R\s+777/,
+  /\b:()\s*>\s*\//,  // redirect overwrite to root
+  /\bcurl\s+.*\|\s*sh/,
+  /\bwget\s+.*\|\s*sh/,
+];
+
+function isDangerousTool(toolName: string, args: Record<string, unknown>): boolean {
+  if (toolName === "execute_shell" && typeof args.command === "string") {
+    const cmd = args.command as string;
+    return DANGEROUS_SHELL_PATTERNS.some(p => p.test(cmd));
+  }
+  return false;
 }
 
 export class Agent {
@@ -266,12 +292,14 @@ export class Agent {
 
       let assistantMessage = "";
       const accumulatedToolCalls: Map<number, ToolCallChunk> = new Map();
+      const emittedToolCallStart: Set<number> = new Set();
 
       let streamRetriesRemaining = 1;
 
       while (true) {
         assistantMessage = "";
         accumulatedToolCalls.clear();
+        emittedToolCallStart.clear();
 
         try {
           for await (const chunk of this.llm.streamCompletion(
@@ -304,6 +332,20 @@ export class Agent {
               const accumulated = accumulatedToolCalls.get(toolCall.index)!;
               accumulated.function.name += toolCall.function.name;
               accumulated.function.arguments += toolCall.function.arguments;
+
+              // Emit onToolCallStart as soon as we have a tool name
+              if (
+                accumulated.function.name &&
+                !emittedToolCallStart.has(toolCall.index) &&
+                callbacks.onToolCallStart
+              ) {
+                emittedToolCallStart.add(toolCall.index);
+                let partialArgs: Partial<Record<string, unknown>> = {};
+                try {
+                  partialArgs = JSON.parse(accumulated.function.arguments || "{}");
+                } catch {}
+                callbacks.onToolCallStart(accumulated.function.name, partialArgs);
+              }
             }
           }
 
@@ -442,78 +484,88 @@ export class Agent {
 
         callbacks.onToolCall(toolName, toolArgs);
 
-        let result: string = "";
-        const toolResult = executeTool(toolName, toolArgs);
+        let toolRes: ToolResult = { text: "" };
 
-        if (toolResult instanceof Promise) {
-          let lastError: Error | null = null;
-          let succeeded = false;
+        // Check approval for dangerous tools
+        if (callbacks.onToolApproval && isDangerousTool(toolName, toolArgs as Record<string, unknown>)) {
+          const approved = callbacks.onToolApproval(toolName, toolArgs as Record<string, unknown>);
+          if (!approved) {
+            toolRes = { text: "Tool execution denied by user" };
+            this.messages.addMessage("tool", toolRes.text, {
+              tool_call_id: toolCall.id,
+              name: toolName,
+            });
+            callbacks.onChunk({
+              role: "tool",
+              content: toolRes.text,
+              toolName,
+            });
+            continue;
+          }
+        }
 
-          for (let attempt = 0; attempt <= MAX_TOOL_RETRIES; attempt++) {
-            try {
-              if (attempt > 0) {
-                logger.info("Retrying async tool", {
-                  toolName,
-                  attempt,
-                });
-              }
-              result = await (attempt === 0
-                ? toolResult
-                : executeTool(toolName, toolArgs));
-              succeeded = true;
-              logger.info("Async tool completed", {
-                toolName,
-                resultLength: result.length,
-              });
-              break;
-            } catch (error) {
-              lastError =
-                error instanceof Error ? error : new Error(String(error));
-              logger.error("Async tool execution failed", {
+        const toolResultPromise = executeTool(toolName, toolArgs);
+
+        let lastError: Error | null = null;
+        let succeeded = false;
+
+        for (let attempt = 0; attempt <= MAX_TOOL_RETRIES; attempt++) {
+          try {
+            if (attempt > 0) {
+              logger.info("Retrying async tool", {
                 toolName,
                 attempt,
-                error: lastError.message,
               });
             }
-          }
-
-          if (!succeeded) {
-            result = `[Tool error: ${toolName} failed after ${MAX_TOOL_RETRIES + 1} attempts. Last error: ${lastError?.message}]`;
-            logger.error("Async tool exhausted retries", {
+            toolRes = await (attempt === 0
+              ? toolResultPromise
+              : executeTool(toolName, toolArgs));
+            succeeded = true;
+            logger.info("Tool completed", {
               toolName,
-              error: lastError?.message,
+              resultLength: toolRes.text.length,
             });
-          }
-        } else {
-          try {
-            result = toolResult;
+            break;
           } catch (error) {
-            const errorMsg =
-              error instanceof Error ? error.message : String(error);
-            result = `[Tool error: ${toolName} failed. Error: ${errorMsg}]`;
-            logger.error("Sync tool execution failed", {
+            lastError =
+              error instanceof Error ? error : new Error(String(error));
+            logger.error("Tool execution failed", {
               toolName,
-              error: errorMsg,
+              attempt,
+              error: lastError.message,
             });
           }
         }
+
+        if (!succeeded) {
+          toolRes = {
+            text: `[Tool error: ${toolName} failed after ${MAX_TOOL_RETRIES + 1} attempts. Last error: ${lastError?.message}]`,
+          };
+          logger.error("Tool exhausted retries", {
+            toolName,
+            error: lastError?.message,
+          });
+        }
+
+        const result = toolRes.text;
 
         if (result.startsWith("Error:")) {
           logger.error("Tool returned an error result", {
             toolName,
             errorResult: result,
           });
-          result = `[Tool error: ${toolName} returned: ${result}]`;
+          toolRes.text = `[Tool error: ${toolName} returned: ${result}]`;
         }
 
-        this.messages.addMessage("tool", result, {
+        this.messages.addMessage("tool", toolRes.text, {
           tool_call_id: toolCall.id,
         });
 
         callbacks.onChunk({
           role: "tool",
-          content: result,
+          content: toolRes.text,
           toolName: formatToolCall(toolName, toolArgs),
+          diff: toolRes.diff,
         });
       }
     }
@@ -601,7 +653,7 @@ export class Agent {
   // --- Chat persistence ---
 
   getMessagesForSave(): ChatCompletionMessageParam[] {
-    return this.messages.getMessages();
+    return this.messages.getMessagesForSave();
   }
 
   restoreMessages(savedMessages: ChatCompletionMessageParam[]): void {

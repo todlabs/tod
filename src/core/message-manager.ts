@@ -108,6 +108,35 @@ export class MessageManager {
   }
 
   /**
+   * Messages for saving to disk — tool content truncated to save space.
+   * System prompt is excluded (regenerated on resume).
+   */
+  getMessagesForSave(): ChatCompletionMessageParam[] {
+    const MAX_TOOL_CONTENT = 500;
+    const MAX_ASSISTANT_CONTENT = 2000;
+
+    return this.messages
+      .filter((msg) => msg.role !== 'system')
+      .map((msg) => {
+        if (msg.role === 'tool') {
+          const content = typeof msg.content === 'string' ? msg.content : '';
+          const truncated = content.length > MAX_TOOL_CONTENT
+            ? content.substring(0, MAX_TOOL_CONTENT) + '\n[...truncated]'
+            : content;
+          return { ...msg, content: truncated };
+        }
+        if (msg.role === 'assistant' && typeof msg.content === 'string') {
+          const content = msg.content;
+          const truncated = content.length > MAX_ASSISTANT_CONTENT
+            ? content.substring(0, MAX_ASSISTANT_CONTENT) + '\n[...truncated]'
+            : content;
+          return { ...msg, content: truncated };
+        }
+        return msg;
+      });
+  }
+
+  /**
    * Сообщения + ephemeral context (skill, background tasks) — для отправки в LLM
    */
   getMessagesWithEphemeral(): ChatCompletionMessageParam[] {
@@ -177,6 +206,7 @@ export class MessageManager {
   /**
    * Restore messages from a saved chat. Replaces all current messages.
    * Regenerates the system prompt with current cwd.
+   * Saved messages no longer include system prompt (since getMessagesForSave filters it).
    */
   restoreMessages(savedMessages: ChatCompletionMessageParam[]): void {
     // Regenerate system prompt with current cwd
@@ -185,8 +215,9 @@ export class MessageManager {
         role: 'system',
         content: getSystemPrompt(process.cwd(), this.mcpToolDescriptions),
       },
-      // Skip the old system prompt (index 0) from saved messages
-      ...savedMessages.slice(1),
+      // Saved messages don't include system prompt anymore,
+      // but handle old format where index 0 was system prompt
+      ...(savedMessages[0]?.role === 'system' ? savedMessages.slice(1) : savedMessages),
     ];
     this.ephemeralContext.clear();
     logger.debug('Messages restored', { count: this.messages.length });

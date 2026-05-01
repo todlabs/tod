@@ -1,9 +1,10 @@
-import React, { useState, useEffect, useRef } from "react";
-import { Box, Text, useInput } from "ink";
-import { readdirSync } from "fs";
+import React, { useState, useEffect, useRef, useCallback } from "react";
+import { Box, Text, useInput, useApp } from "ink";
+import { readdirSync, writeFileSync, existsSync, mkdirSync, appendFileSync } from "fs";
 import { join } from "path";
 import { Agent, type AgentMessage } from "../agent/index.js";
 import { configService } from "../services/config.js";
+import { findProjectRoot, getMemoryPath } from "../prompts/system.js";
 import {
   providers,
   getProvider,
@@ -18,12 +19,18 @@ import Header from "./components/Header.js";
 import MessageList from "./components/MessageList.js";
 import InputArea from "./components/InputArea.js";
 import StatusBar from "./components/StatusBar.js";
+import WorkingIndicator from "./components/WorkingIndicator.js";
+import { checkForUpdate } from "../services/update-check.js";
 import { useMessageProcessing } from "./hooks/useMessageProcessing.js";
-import { commands, getCommandSuggestions, matchCommand, formatCommandName } from "./commands.js";
-import WorkingIndicator from "./WorkingIndicator.js";
+import {
+  commands,
+  getCommandSuggestions,
+  matchCommand,
+  formatCommandName,
+} from "./commands.js";
 
 function setTitle(title: string) {
-  process.stdout.write(`\x1b]0;${title}\x07`);
+  process.stdout.write(`\x1b]0;${title}\x1b\x07`);
 }
 
 interface AppProps {
@@ -46,7 +53,8 @@ type SuggestionItem = {
 type MenuMode =
   | { type: "provider-select" }
   | { type: "provider-apikey"; provider: Provider }
-  | { type: "model-select"; provider: Provider };
+  | { type: "model-select"; provider: Provider }
+  | { type: "settings" };
 
 const SKIP_DIRS = new Set([
   "node_modules",
@@ -59,7 +67,11 @@ const SKIP_DIRS = new Set([
   "build",
 ]);
 
-function searchRecursive(query: string, dir: string, depth: number): SuggestionItem[] {
+function searchRecursive(
+  query: string,
+  dir: string,
+  depth: number,
+): SuggestionItem[] {
   if (depth > 3) return [];
   const results: SuggestionItem[] = [];
   const lowerQuery = query.toLowerCase();
@@ -70,15 +82,30 @@ function searchRecursive(query: string, dir: string, depth: number): SuggestionI
       const fullPath = dir === "." ? item.name : `${dir}/${item.name}`;
       if (item.isDirectory()) {
         if (item.name.toLowerCase().includes(lowerQuery)) {
-          results.push({ type: "file", path: fullPath + "/", isDir: true, label: fullPath + "/" });
+          results.push({
+            type: "file",
+            path: fullPath + "/",
+            isDir: true,
+            label: fullPath + "/",
+          });
         }
-        if (depth < 2) results.push(...searchRecursive(query, join(dir, item.name), depth + 1));
+        if (depth < 2)
+          results.push(
+            ...searchRecursive(query, join(dir, item.name), depth + 1),
+          );
       } else if (item.name.toLowerCase().includes(lowerQuery)) {
-        results.push({ type: "file", path: fullPath, isDir: false, label: fullPath });
+        results.push({
+          type: "file",
+          path: fullPath,
+          isDir: false,
+          label: fullPath,
+        });
       }
       if (results.length >= 20) break;
     }
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
   return results;
 }
 
@@ -95,7 +122,12 @@ function getFileSuggestions(query: string): SuggestionItem[] {
       if (SKIP_DIRS.has(item.name)) continue;
       if (!item.name.toLowerCase().includes(filePart)) continue;
       const fullPath = dir === "." ? item.name : `${dir}/${item.name}`;
-      results.push({ type: "file", path: fullPath, isDir: item.isDirectory(), label: fullPath });
+      results.push({
+        type: "file",
+        path: fullPath,
+        isDir: item.isDirectory(),
+        label: fullPath,
+      });
     }
     return results.slice(0, 15);
   } catch {
@@ -103,7 +135,9 @@ function getFileSuggestions(query: string): SuggestionItem[] {
   }
 }
 
-function getAtMention(input: string): { query: string; atIndex: number } | null {
+function getAtMention(
+  input: string,
+): { query: string; atIndex: number } | null {
   const match = input.match(/@(\S*)$/);
   if (!match) return null;
   return { query: match[1], atIndex: match.index! };
@@ -116,8 +150,58 @@ function applyFileSuggestion(input: string, filePath: string): string {
   return `${before}@${filePath} ${rest.trim()}`;
 }
 
-function ProviderMenu({ menu, selectedIndex, apikeyInput, dynamicModels }: {
-  menu: MenuMode | null; selectedIndex: number; apikeyInput: string; dynamicModels: ModelInfo[] | null;
+function SettingsMenu({
+  settings,
+  selectedIndex,
+  onToggle,
+}: {
+  settings: Array<{ key: string; label: string; enabled: boolean }>;
+  selectedIndex: number;
+  onToggle: (idx: number) => void;
+}) {
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      <Text color="white">Settings:</Text>
+      {settings.map((s, idx) => {
+        const sel = idx === selectedIndex;
+        const status = s.enabled ? "enabled" : "disabled";
+        return (
+          <Box key={s.key}>
+            {sel ? (
+              <Text backgroundColor="white" color="black" bold>
+                {sel ? "› " : "  "}
+                {s.label.padEnd(20)} {status}
+              </Text>
+            ) : (
+              <Text color="gray">
+                {sel ? "› " : "  "}
+                {s.label.padEnd(20)}{" "}
+                <Text color={s.enabled ? "green" : "gray"}>{status}</Text>
+              </Text>
+            )}
+          </Box>
+        );
+      })}
+      <Text color="gray" dimColor>
+        {" "}
+        ↑↓ select Space toggle Enter/Esc close
+      </Text>
+    </Box>
+  );
+}
+
+function ProviderMenu({
+  menu,
+  selectedIndex,
+  apikeyInput,
+  dynamicModels,
+  modelsLoading,
+}: {
+  menu: MenuMode | null;
+  selectedIndex: number;
+  apikeyInput: string;
+  dynamicModels: ModelInfo[] | null;
+  modelsLoading: boolean;
 }) {
   if (!menu) return null;
 
@@ -131,55 +215,107 @@ function ProviderMenu({ menu, selectedIndex, apikeyInput, dynamicModels }: {
           const isCurrent = p.id === currentProvider;
           return (
             <Box key={p.id}>
-              {sel ? <Text backgroundColor="white" color="black" bold>{p.name}</Text> : <Text color="gray">{p.name}</Text>}
-              {isCurrent && <Text color="gray" dimColor> current</Text>}
+              {sel ? (
+                <Text backgroundColor="white" color="black" bold>
+                  {p.name}
+                </Text>
+              ) : (
+                <Text color="gray">{p.name}</Text>
+              )}
+              {isCurrent && (
+                <Text color="gray" dimColor>
+                  {" "}
+                  current
+                </Text>
+              )}
             </Box>
           );
         })}
-        <Text color="gray" dimColor> ↑↓ select Enter confirm Esc cancel</Text>
+        <Text color="gray" dimColor>
+          {" "}
+          ↑↓ select Enter confirm Esc cancel
+        </Text>
       </Box>
     );
   }
 
   if (menu.type === "provider-apikey") {
-    const keyPreview = apikeyInput.length > 0 ? "*".repeat(Math.min(apikeyInput.length, 20)) : "";
+    const keyPreview =
+      apikeyInput.length > 0
+        ? "*".repeat(Math.min(apikeyInput.length, 20))
+        : "";
     const hasKey = !!configService.getProviderKey(menu.provider.id);
     return (
       <Box flexDirection="column" marginTop={1}>
         <Text color="white">{menu.provider.name} — API Key</Text>
-        {hasKey && <Text color="gray" dimColor>Key already set — Enter to keep, Esc to skip</Text>}
+        {hasKey && (
+          <Text color="gray" dimColor>
+            Key already set — Enter to keep, Esc to skip
+          </Text>
+        )}
         <Box>
           <Text color="gray">Key: </Text>
           <Text color="white">{keyPreview || "(empty)"}</Text>
           <Text inverse> </Text>
         </Box>
-        <Text color="gray" dimColor> Enter confirm Esc skip</Text>
+        <Text color="gray" dimColor>
+          {" "}
+          Enter confirm Esc skip
+        </Text>
       </Box>
     );
   }
 
   if (menu.type === "model-select") {
     const currentModel = configService.getModel();
-    const models = dynamicModels || menu.provider.models;
+    // dynamicModels: null = haven't fetched, [] = API returned empty, ModelInfo[] = from API
+    // Use API models if available, fall back to static list if API returned nothing
+    const models = (dynamicModels && dynamicModels.length > 0)
+      ? dynamicModels
+      : menu.provider.models;
+    const isLive = dynamicModels !== null && dynamicModels.length > 0;
     return (
       <Box flexDirection="column" marginTop={1}>
         <Text color="white">{menu.provider.name} — Model:</Text>
+        {isLive && models.length > 0 && (
+          <Text color="green" dimColor> live</Text>
+        )}
         {models.length === 0 ? (
-          <Text color="gray" dimColor> Fetching models...</Text>
+          <Text color="gray" dimColor>
+            {" "}
+            {modelsLoading ? "Fetching models..." : isLive ? "No models found" : "Set API key to fetch models"}
+          </Text>
         ) : (
           models.map((m, idx) => {
             const sel = idx === selectedIndex;
             const isCurrent = m.id === currentModel;
             return (
               <Box key={m.id}>
-                {sel ? <Text backgroundColor="white" color="black" bold>{m.name}</Text> : <Text color="gray">{m.name}</Text>}
-                <Text color="gray" dimColor> — {m.description}</Text>
-                {isCurrent && <Text color="gray" dimColor> current</Text>}
+                {sel ? (
+                  <Text backgroundColor="white" color="black" bold>
+                    {m.name}
+                  </Text>
+                ) : (
+                  <Text color="gray">{m.name}</Text>
+                )}
+                <Text color="gray" dimColor>
+                  {" "}
+                  — {m.description}
+                </Text>
+                {isCurrent && (
+                  <Text color="gray" dimColor>
+                    {" "}
+                    current
+                  </Text>
+                )}
               </Box>
             );
           })
         )}
-        <Text color="gray" dimColor> ↑↓ select Enter confirm Esc cancel</Text>
+        <Text color="gray" dimColor>
+          {" "}
+          ↑↓ select Enter confirm Esc cancel
+        </Text>
       </Box>
     );
   }
@@ -187,8 +323,16 @@ function ProviderMenu({ menu, selectedIndex, apikeyInput, dynamicModels }: {
   return null;
 }
 
-function SuggestionBar({ suggestions, selectedIndex, onSelect, onExecute }: {
-  suggestions: SuggestionItem[]; selectedIndex: number; onSelect: (idx: number) => void; onExecute: (idx: number) => void;
+function SuggestionBar({
+  suggestions,
+  selectedIndex,
+  onSelect,
+  onExecute,
+}: {
+  suggestions: SuggestionItem[];
+  selectedIndex: number;
+  onSelect: (idx: number) => void;
+  onExecute: (idx: number) => void;
 }) {
   const isCmd = suggestions[0]?.type === "command";
 
@@ -199,12 +343,24 @@ function SuggestionBar({ suggestions, selectedIndex, onSelect, onExecute }: {
           const sel = idx === selectedIndex;
           return (
             <Box key={idx}>
-              {sel ? <Text backgroundColor="white" color="black" bold>{item.displayName || item.name}</Text> : <Text color="gray">{item.displayName || item.name}</Text>}
-              <Text color="gray" dimColor> — {item.description}</Text>
+              {sel ? (
+                <Text backgroundColor="white" color="black" bold>
+                  {item.displayName || item.name}
+                </Text>
+              ) : (
+                <Text color="gray">{item.displayName || item.name}</Text>
+              )}
+              <Text color="gray" dimColor>
+                {" "}
+                — {item.description}
+              </Text>
             </Box>
           );
         })}
-        <Text color="gray" dimColor> ↑↓ select Enter run Tab fill Esc close</Text>
+        <Text color="gray" dimColor>
+          {" "}
+          ↑↓ select Enter run Tab fill Esc close
+        </Text>
       </Box>
     );
   }
@@ -215,25 +371,45 @@ function SuggestionBar({ suggestions, selectedIndex, onSelect, onExecute }: {
         const sel = idx === selectedIndex;
         return (
           <Box key={idx}>
-            <Text color={sel ? "black" : item.isDir ? "yellow" : "gray"} backgroundColor={sel ? "white" : undefined}>
-              {sel ? " → " : "   "}{item.isDir ? "▸ " : "  "}{item.label}
+            <Text
+              color={sel ? "black" : item.isDir ? "yellow" : "gray"}
+              backgroundColor={sel ? "white" : undefined}
+            >
+              {sel ? " → " : "   "}
+              {item.isDir ? "▸ " : "  "}
+              {item.label}
             </Text>
           </Box>
         );
       })}
-      <Text color="gray" dimColor> ↑↓ select Tab/Enter fill Esc close</Text>
+      <Text color="gray" dimColor>
+        {" "}
+        ↑↓ select Tab/Enter fill Esc close
+      </Text>
     </Box>
   );
 }
 
 function App({ agent, mcpManager, version, resumeChatId }: AppProps) {
+  const { exit } = useApp();
   const [input, setInput] = useState("");
-  const [showThinking, setShowThinking] = useState(true);
   const [suggestions, setSuggestions] = useState<SuggestionItem[]>([]);
   const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(-1);
   const [currentDir, setCurrentDir] = useState(process.cwd());
-  // Flag to prevent double-submit when suggestion is executed via Enter
   const suggestionExecutedRef = useRef(false);
+  const pendingCompactRef = useRef(false);
+
+  const uiSettings = configService.getUiSettings();
+  const [cleanMode, setCleanMode] = useState(uiSettings.cleanMode ?? false);
+  const [enableAnimation, setEnableAnimation] = useState(
+    uiSettings.enableAnimation ?? true,
+  );
+  const [showThinking, setShowThinking] = useState(
+    uiSettings.showThinking ?? true,
+  );
+  const [autoCompact, setAutoCompact] = useState(
+    uiSettings.autoCompact ?? false,
+  );
 
   const [needsSetup, setNeedsSetup] = useState(() => {
     const apiKey = configService.getApiKey();
@@ -244,14 +420,77 @@ function App({ agent, mcpManager, version, resumeChatId }: AppProps) {
   const [menuIndex, setMenuIndex] = useState(0);
   const [apikeyInput, setApikeyInput] = useState("");
   const [dynamicModels, setDynamicModels] = useState<ModelInfo[] | null>(null);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [updateVersion, setUpdateVersion] = useState<string | null>(null);
+
+  // Check for updates on startup
+  useEffect(() => {
+    checkForUpdate(version.replace(/^v/, "")).then((v) => {
+      if (v) setUpdateVersion(v);
+    });
+  }, []);
 
   const {
-    messages, currentThinking, isProcessing, pendingCount,
-    processMessage, stopProcessing, resetMessages, addMessage,
-    currentChatId, currentChatName, resumeChat, getChatList,
+    messages,
+    currentThinking,
+    isProcessing,
+    status,
+    pendingCount,
+    processMessage,
+    stopProcessing,
+    resetMessages,
+    addMessage,
+    currentChatId,
+    currentChatName,
+    resumeChat,
+    getChatList,
+    compactMessages,
   } = useMessageProcessing(agent);
 
-  const totalTokens = messages.reduce((sum, m) => sum + (m.content?.length || 0), 0) / 4;
+  const totalTokens =
+    messages.reduce((sum, m) => sum + (m.content?.length || 0), 0) / 4;
+
+  const settingsItems: Array<{ key: string; label: string; enabled: boolean }> =
+    [
+      {
+        key: "cleanMode",
+        label: "Clean mode (no ctx bar)",
+        enabled: cleanMode,
+      },
+      { key: "enableAnimation", label: "Animation", enabled: enableAnimation },
+      { key: "showThinking", label: "Show thinking", enabled: showThinking },
+      {
+        key: "autoCompact",
+        label: "Auto compact at 80%",
+        enabled: autoCompact,
+      },
+    ];
+
+  // Auto-compact effect: after each processed turn, check threshold
+  useEffect(() => {
+    if (!autoCompact || isProcessing || pendingCompactRef.current) return;
+    const maxContext = (() => {
+      const providerId = configService.getProvider() || "fireworks";
+      const modelId = configService.getModel();
+      const info = getModelInfo(providerId, modelId);
+      return info?.contextLength || 128000;
+    })();
+    const threshold = uiSettings.autoCompactThreshold || 80;
+    const pct = Math.round((totalTokens / maxContext) * 100);
+    if (pct >= threshold) {
+      pendingCompactRef.current = true;
+      compactMessages()
+        .then((result) => {
+          addSystemMessage(
+            `Auto-compacted: ${pct}% → ${Math.round((result.newTokens / maxContext) * 100)}% (saved ${Math.round(((result.oldTokens - result.newTokens) / result.oldTokens) * 100)}%)`,
+          );
+          pendingCompactRef.current = false;
+        })
+        .catch(() => {
+          pendingCompactRef.current = false;
+        });
+    }
+  }, [messages.length, isProcessing, autoCompact]);
 
   useEffect(() => {
     if (resumeChatId) {
@@ -263,30 +502,52 @@ function App({ agent, mcpManager, version, resumeChatId }: AppProps) {
 
   useEffect(() => {
     if (needsSetup && !resumeChatId) {
-      addSystemMessage("Welcome to TOD! No API key configured.\nUse /providers to select a provider and set your API key.");
+      addSystemMessage(
+        "Welcome to TOD! No API key configured.\nUse /providers to select a provider and set your API key.",
+      );
       openProviderMenu();
     }
   }, []);
 
   useEffect(() => {
-    const iv = setInterval(() => { try { setCurrentDir(process.cwd()); } catch { /* */ } }, 5000);
+    const iv = setInterval(() => {
+      try {
+        setCurrentDir(process.cwd());
+      } catch {
+        /* */
+      }
+    }, 5000);
     return () => clearInterval(iv);
   }, []);
 
   useEffect(() => {
-    const modelName = configService.getModel().split("/").pop() || configService.getModel();
+    const modelName =
+      configService.getModel().split("/").pop() || configService.getModel();
     setTitle(`TOD ${version} · ${modelName}`);
   }, [version]);
 
   useEffect(() => {
     setSelectedSuggestionIndex(-1);
-    if (menu) { setSuggestions([]); return; }
-    if (!input.startsWith("/") && !getAtMention(input)) { setSuggestions([]); return; }
+    if (menu) {
+      setSuggestions([]);
+      return;
+    }
+    if (!input.startsWith("/") && !getAtMention(input)) {
+      setSuggestions([]);
+      return;
+    }
 
     const timer = setTimeout(() => {
       if (input.startsWith("/")) {
         const cmds = getCommandSuggestions(input);
-        setSuggestions(cmds.map((c) => ({ type: "command", name: c.name, displayName: formatCommandName(c), description: c.description })));
+        setSuggestions(
+          cmds.map((c) => ({
+            type: "command",
+            name: c.name,
+            displayName: formatCommandName(c),
+            description: c.description,
+          })),
+        );
       } else {
         const mention = getAtMention(input);
         if (mention) setSuggestions(getFileSuggestions(mention.query));
@@ -309,7 +570,6 @@ function App({ agent, mcpManager, version, resumeChatId }: AppProps) {
   function executeSuggestion(idx: number) {
     const item = suggestions[idx];
     if (!item) return;
-    // Mark that we're handling this Enter — prevents double submit
     suggestionExecutedRef.current = true;
     if (item.type === "command") {
       setSuggestions([]);
@@ -323,99 +583,270 @@ function App({ agent, mcpManager, version, resumeChatId }: AppProps) {
     }
   }
 
-  function openProviderMenu() { setMenu({ type: "provider-select" }); setMenuIndex(0); setApikeyInput(""); }
-  function selectProvider(provider: Provider) { setMenu({ type: "provider-apikey", provider }); setApikeyInput(""); }
+  function openProviderMenu() {
+    setMenu({ type: "provider-select" });
+    setMenuIndex(0);
+    setApikeyInput("");
+  }
+  function selectProvider(provider: Provider) {
+    setMenu({ type: "provider-apikey", provider });
+    setApikeyInput("");
+  }
 
   function openModelMenu(provider: Provider) {
-    setMenu({ type: "model-select", provider }); setMenuIndex(0); setDynamicModels(null);
-    const apiKey = configService.getProviderKey(provider.id) || configService.getApiKey();
+    setMenu({ type: "model-select", provider });
+    setMenuIndex(0);
+    setDynamicModels(null);
+    setModelsLoading(false);
+    const apiKey =
+      configService.getProviderKey(provider.id) || configService.getApiKey();
+    const providerCfg = configService.getProviderConfig(provider.id);
     if (apiKey) {
-      fetchModelsFromAPI(provider.baseURL, apiKey).then((models) => { setDynamicModels(models.length > 0 ? models : null); });
+      setModelsLoading(true);
+      fetchModelsFromAPI(provider.baseURL, apiKey, providerCfg.headers).then((models) => {
+        setDynamicModels(models);
+        setModelsLoading(false);
+      });
     }
   }
 
   function selectModel(provider: Provider, model: ModelInfo) {
     configService.setModel(model.id);
-    if (model.maxTokens) { const cfg = configService.getConfig(); cfg.maxTokens = model.maxTokens; }
-    const newConfig = configService.getConfig();
-    agent.updateConfig(newConfig);
-    setMenu(null); setDynamicModels(null); setNeedsSetup(false);
-    const ctx = model.contextLength ? ` (${Math.round(model.contextLength / 1000)}K ctx)` : "";
+    if (model.maxTokens) {
+      const cfg = configService.getProviderConfig(configService.getProvider());
+      cfg.maxTokens = model.maxTokens;
+    }
+    agent.updateConfig(configService.getAgentConfig());
+    setMenu(null);
+    setDynamicModels(null);
+    setNeedsSetup(false);
+    const ctx = model.contextLength
+      ? ` (${Math.round(model.contextLength / 1000)}K ctx)`
+      : "";
     addSystemMessage(`${provider.name} → ${model.name}${ctx}`);
   }
 
-  function closeMenu() { setMenu(null); setMenuIndex(0); setApikeyInput(""); setDynamicModels(null); }
+  function openSettingsMenu() {
+    if (menu && menu.type === "settings") {
+      closeMenu();
+      return;
+    }
+    setMenu({ type: "settings" });
+    setMenuIndex(0);
+  }
 
-  useInput((inputChar, key) => {
-    if (menu) {
+  // --- Suggestion & ESC callbacks for MultilineInput ---
+  const handleSuggestionNavigate = useCallback(
+    (direction: "up" | "down") => {
+      if (direction === "up") {
+        setSelectedSuggestionIndex((prev) => Math.max(prev - 1, -1));
+      } else {
+        setSelectedSuggestionIndex((prev) =>
+          prev < 0 ? 0 : Math.min(prev + 1, suggestions.length - 1),
+        );
+      }
+    },
+    [suggestions.length],
+  );
+
+  const handleSuggestionFill = useCallback(
+    (idx: number) => {
+      fillSuggestion(idx);
+    },
+    [suggestions],
+  );
+
+  const handleSuggestionExecute = useCallback(
+    (idx: number) => {
+      executeSuggestion(idx);
+    },
+    [suggestions],
+  );
+
+  const handleEscape = useCallback(() => {
+    if (hasSuggestions) {
+      setSuggestions([]);
+      setSelectedSuggestionIndex(-1);
+      return;
+    }
+    if (isProcessing) {
+      agent.abort();
+      stopProcessing();
+      return;
+    }
+  }, [hasSuggestions, isProcessing, agent, stopProcessing]);
+
+  function closeMenu() {
+    setMenu(null);
+    setMenuIndex(0);
+    setApikeyInput("");
+    setDynamicModels(null);
+  }
+
+  function toggleSetting(idx: number) {
+    const item = settingsItems[idx];
+    if (!item) return;
+    switch (item.key) {
+      case "cleanMode":
+        setCleanMode((prev) => {
+          configService.setUiSetting("cleanMode", !prev);
+          return !prev;
+        });
+        break;
+      case "enableAnimation":
+        setEnableAnimation((prev) => {
+          configService.setUiSetting("enableAnimation", !prev);
+          return !prev;
+        });
+        break;
+      case "showThinking":
+        setShowThinking((prev) => {
+          configService.setUiSetting("showThinking", !prev);
+          return !prev;
+        });
+        break;
+      case "autoCompact":
+        setAutoCompact((prev) => {
+          configService.setUiSetting("autoCompact", !prev);
+          return !prev;
+        });
+        break;
+    }
+  }
+
+  // Menu-only input handler — only active when a menu is open.
+  // All other input (typing, suggestions, ESC) is handled by MultilineInput.
+  useInput(
+    (inputChar, key) => {
+      if (!menu) return; // safety — isActive should prevent this
+
       if (key.escape) {
         if (menu.type === "provider-apikey") {
           configService.setProvider(menu.provider.id);
-          setMenu({ type: "model-select", provider: menu.provider }); setMenuIndex(0); return;
+          setMenu({ type: "model-select", provider: menu.provider });
+          setMenuIndex(0);
+          return;
         }
-        closeMenu(); return;
+        closeMenu();
+        return;
       }
       if (menu.type === "provider-select") {
-        if (key.downArrow) { setMenuIndex((prev) => Math.min(prev + 1, providers.length - 1)); return; }
-        if (key.upArrow) { setMenuIndex((prev) => Math.max(prev - 1, 0)); return; }
-        if (key.return) { selectProvider(providers[menuIndex]); return; }
+        if (key.downArrow) {
+          setMenuIndex((prev) => Math.min(prev + 1, providers.length - 1));
+          return;
+        }
+        if (key.upArrow) {
+          setMenuIndex((prev) => Math.max(prev - 1, 0));
+          return;
+        }
+        if (key.return) {
+          selectProvider(providers[menuIndex]);
+          return;
+        }
         return;
       }
       if (menu.type === "provider-apikey") {
-        if (key.return) { const key2 = apikeyInput.trim() || undefined; configService.setProvider(menu.provider.id, key2); openModelMenu(menu.provider); return; }
-        if (key.backspace || key.delete) { setApikeyInput((prev) => prev.slice(0, -1)); return; }
-        if (inputChar && !key.ctrl && !key.meta) { setApikeyInput((prev) => prev + inputChar); return; }
+        if (key.return) {
+          const key2 = apikeyInput.trim() || undefined;
+          configService.setProvider(menu.provider.id, key2);
+          openModelMenu(menu.provider);
+          return;
+        }
+        if (key.backspace || key.delete) {
+          setApikeyInput((prev) => prev.slice(0, -1));
+          return;
+        }
+        if (inputChar && !key.ctrl && !key.meta) {
+          setApikeyInput((prev) => prev + inputChar);
+          return;
+        }
         return;
       }
       if (menu.type === "model-select") {
-        const models = dynamicModels || menu.provider.models;
+        const models = (dynamicModels && dynamicModels.length > 0)
+          ? dynamicModels
+          : menu.provider.models;
         if (models.length === 0) return;
-        if (key.downArrow) { setMenuIndex((prev) => Math.min(prev + 1, models.length - 1)); return; }
-        if (key.upArrow) { setMenuIndex((prev) => Math.max(prev - 1, 0)); return; }
-        if (key.return) { selectModel(menu.provider, models[menuIndex]); return; }
+        if (key.downArrow) {
+          setMenuIndex((prev) => Math.min(prev + 1, models.length - 1));
+          return;
+        }
+        if (key.upArrow) {
+          setMenuIndex((prev) => Math.max(prev - 1, 0));
+          return;
+        }
+        if (key.return) {
+          selectModel(menu.provider, models[menuIndex]);
+          return;
+        }
         return;
       }
-      return;
-    }
+      if (menu.type === "settings") {
+        if (key.downArrow) {
+          setMenuIndex((prev) => Math.min(prev + 1, settingsItems.length - 1));
+          return;
+        }
+        if (key.upArrow) {
+          setMenuIndex((prev) => Math.max(prev - 1, 0));
+          return;
+        }
+        if (key.return) {
+          toggleSetting(menuIndex);
+          return;
+        }
+        if (inputChar === " ") {
+          toggleSetting(menuIndex);
+          return;
+        }
+        return;
+      }
+    },
+    { isActive: !!menu },
+  );
 
-    if (key.escape) {
-      if (hasSuggestions) { setSuggestions([]); setSelectedSuggestionIndex(-1); return; }
-      if (isProcessing) { agent.abort(); stopProcessing(); return; }
-      return;
-    }
-
-    if (hasSuggestions && !isProcessing) {
-      if (key.downArrow) { setSelectedSuggestionIndex((prev) => prev < 0 ? 0 : Math.min(prev + 1, suggestions.length - 1)); return; }
-      if (key.upArrow) { setSelectedSuggestionIndex((prev) => Math.max(prev - 1, -1)); return; }
-      if (key.tab) { fillSuggestion(selectedSuggestionIndex >= 0 ? selectedSuggestionIndex : 0); return; }
-      if (key.return && selectedSuggestionIndex >= 0) { executeSuggestion(selectedSuggestionIndex); return; }
-    }
-  });
-
-  // --- Command handling ---
   function handleCommand(rawInput: string) {
-    const cmd = matchCommand(rawInput);
-    if (!cmd) { addSystemMessage("Unknown command. Type /help for available commands."); return; }
+    const resolvedCmd = matchCommand(rawInput);
+    if (!resolvedCmd) {
+      addSystemMessage("Unknown command. Type /help for available commands.");
+      return;
+    }
 
-    switch (cmd) {
-      case "/provider": case "/providers": openProviderMenu(); break;
-      case "/model": case "/models": {
+    // Extract arguments after the command
+    const parts = rawInput.trim().split(/\s+/);
+    const originalCmd = parts[0].toLowerCase();
+    const args = parts.slice(1).join(" ").trim();
+
+    switch (resolvedCmd) {
+      case "/provider":
+      case "/providers":
+        openProviderMenu();
+        break;
+      case "/model":
+      case "/models": {
         const providerId = configService.getProvider() || "fireworks";
         const provider = getProvider(providerId);
         if (provider) openModelMenu(provider);
         break;
       }
       case "/thinking":
-        setShowThinking((prev) => !prev);
-        addSystemMessage(`Thinking display ${!showThinking ? "enabled" : "disabled"}`);
+        setShowThinking((prev) => {
+          const next = !prev;
+          configService.setUiSetting("showThinking", next);
+          addSystemMessage(`Thinking display ${next ? "enabled" : "disabled"}`);
+          return next;
+        });
+        break;
+      case "/settings":
+        openSettingsMenu();
         break;
       case "/clear":
         process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
         resetMessages();
         break;
-      case "/compact": handleCompactContext(); break;
+      case "/compact":
+        handleCompactContext();
+        break;
       case "/resume": {
-        const parts = rawInput.trim().split(/\s+/);
         const targetId = parts[1];
         if (targetId) {
           const ok = resumeChat(targetId);
@@ -430,68 +861,159 @@ function App({ agent, mcpManager, version, resumeChatId }: AppProps) {
               const date = new Date(c.updatedAt).toLocaleDateString();
               return `  ${c.id}  ${c.name}  (${c.messageCount} msgs, ${date})`;
             });
-            addSystemMessage(`Recent chats:\n${lines.join("\n")}\n\nResume with: /resume <id>`);
+            addSystemMessage(
+              `Recent chats:\n${lines.join("\n")}\n\nResume with: /resume <id>`,
+            );
           }
         }
         break;
       }
       case "/help": {
-        const helpText = commands.map((c) => `  ${formatCommandName(c).padEnd(28)} ${c.description}`).join("\n");
+        const helpText = commands
+          .map((c) => `  ${formatCommandName(c).padEnd(28)} ${c.description}`)
+          .join("\n");
         addSystemMessage(`Commands:\n\n${helpText}`);
         break;
       }
       case "/exit": {
-        if (currentChatId && messages.length > 0) {
-          console.log(`\n  Resume this chat: tod --resume ${currentChatId}\n`);
-        }
-        process.exit(0);
+        exit();
+        return;
       }
-      case "/mcp": handleShowMcp(); break;
-      default: addSystemMessage(`Unknown command: ${cmd}`);
+      case "/init": {
+        handleInit();
+        break;
+      }
+      case "/remember": {
+        const note = rawInput.replace(/^\/remember\s*/i, "").trim();
+        if (!note) {
+          addSystemMessage("Usage: /remember <something to remember>");
+          break;
+        }
+        const memoryPath = getMemoryPath(process.cwd());
+        const memoryDir = join(memoryPath, "..");
+        try {
+          mkdirSync(memoryDir, { recursive: true });
+          const timestamp = new Date().toISOString().split("T")[0];
+          appendFileSync(memoryPath, `- [${timestamp}] ${note}\n`, "utf-8");
+          addSystemMessage(`Remembered: ${note}`);
+        } catch (error) {
+          addSystemMessage(`Failed to save: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        break;
+      }
+      case "/mcp":
+        handleShowMcp();
+        break;
+      default:
+        addSystemMessage(`Unknown command: ${resolvedCmd}`);
     }
   }
 
   const handleCompactContext = async () => {
     addSystemMessage("Compacting context...");
     try {
-      const result = await agent.compactContext();
-      resetMessages();
-      addMessage({ role: "assistant", content: `Context compacted!\nOld: ${result.oldTokens}t → New: ${result.newTokens}t (saved ${Math.round(((result.oldTokens - result.newTokens) / result.oldTokens) * 100)}%)` });
+      const result = await compactMessages();
+      addSystemMessage(
+        `Context compacted: ${result.oldTokens}t → ${result.newTokens}t (saved ${Math.round(((result.oldTokens - result.newTokens) / result.oldTokens) * 100)}%)`,
+      );
     } catch (error) {
-      addSystemMessage(`Failed to compact: ${error instanceof Error ? error.message : String(error)}`);
+      addSystemMessage(
+        `Failed to compact: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  };
+
+  const handleInit = () => {
+    const root = findProjectRoot(process.cwd());
+    const agentsPath = join(root, "AGENTS.md");
+
+    if (existsSync(agentsPath)) {
+      addSystemMessage(`AGENTS.md already exists at ${agentsPath}`);
+      return;
+    }
+
+    const template = `# AGENTS — Project Instructions
+
+## Build & Test
+- Build:
+- Test:
+- Lint:
+
+## Code Style
+- Language:
+- Framework:
+
+## Conventions
+- File naming:
+- Import style:
+
+## Important Files
+- Entry point:
+- Config:
+
+## Notes
+
+`;
+
+    try {
+      writeFileSync(agentsPath, template, "utf-8");
+      addSystemMessage(`Created AGENTS.md at ${agentsPath}`);
+    } catch (error) {
+      addSystemMessage(`Failed to create AGENTS.md: ${error instanceof Error ? error.message : String(error)}`);
     }
   };
 
   const handleShowMcp = () => {
-    if (!mcpManager) { addSystemMessage("MCP not initialized"); return; }
+    if (!mcpManager) {
+      addSystemMessage("MCP not initialized");
+      return;
+    }
     const statuses = mcpManager.getStatus();
-    if (statuses.length === 0) { addSystemMessage("No MCP servers configured"); return; }
+    if (statuses.length === 0) {
+      addSystemMessage("No MCP servers configured");
+      return;
+    }
     const lines: string[] = ["MCP Servers:"];
     for (const s of statuses) {
-      const icon = s.status === "connected" ? "●" : s.status === "error" ? "✗" : "○";
-      lines.push(`  ${icon} ${s.name.padEnd(20)} ${s.status} (${s.toolCount} tools)`);
+      const icon =
+        s.status === "connected" ? "●" : s.status === "error" ? "✗" : "○";
+      lines.push(
+        `  ${icon} ${s.name.padEnd(20)} ${s.status} (${s.toolCount} tools)`,
+      );
       if (s.error) lines.push(`      Error: ${s.error}`);
     }
     addSystemMessage(lines.join("\n"));
   };
 
-  const addSystemMessage = (content: string) => { addMessage({ role: "assistant", content }); };
+  const addSystemMessage = (content: string) => {
+    addMessage({ role: "assistant", content });
+  };
 
   const handleSubmit = async (value: string) => {
-    // If a suggestion was just executed via Enter, skip this submit to avoid double
     if (suggestionExecutedRef.current) {
       suggestionExecutedRef.current = false;
       return;
     }
     if (menu) return;
-    setInput(""); setSuggestions([]); setSelectedSuggestionIndex(-1);
+    setInput("");
+    setSuggestions([]);
+    setSelectedSuggestionIndex(-1);
 
-    if (value.trim().startsWith("/")) { handleCommand(value.trim()); return; }
-    if (needsSetup) { addSystemMessage("No API key configured. Use /providers to select a provider and set your API key."); return; }
+    if (value.trim().startsWith("/")) {
+      handleCommand(value.trim());
+      return;
+    }
+    if (needsSetup) {
+      addSystemMessage(
+        "No API key configured. Use /providers to select a provider and set your API key.",
+      );
+      return;
+    }
     await processMessage(value);
   };
 
-  const modelName = configService.getModel().split("/").pop() || configService.getModel();
+  const modelName =
+    configService.getModel().split("/").pop() || configService.getModel();
   const maxContext = (() => {
     const providerId = configService.getProvider() || "fireworks";
     const modelId = configService.getModel();
@@ -501,20 +1023,71 @@ function App({ agent, mcpManager, version, resumeChatId }: AppProps) {
 
   return (
     <Box flexDirection="column" paddingLeft={1} paddingRight={1}>
-      <Header version={version} currentDir={currentDir} />
-      <MessageList messages={messages} thinking={currentThinking} showThinking={showThinking} />
-      <ProviderMenu menu={menu} selectedIndex={menuIndex} apikeyInput={apikeyInput} dynamicModels={dynamicModels} />
-      {hasSuggestions && !menu && (
-        <SuggestionBar suggestions={suggestions} selectedIndex={selectedSuggestionIndex} onSelect={(idx) => setSelectedSuggestionIndex(idx)} onExecute={executeSuggestion} />
+      <Header
+        version={version}
+        currentDir={currentDir}
+        enableAnimation={enableAnimation}
+      />
+      <MessageList
+        messages={messages}
+        thinking={currentThinking}
+        showThinking={showThinking}
+      />
+      {menu?.type === "settings" && (
+        <SettingsMenu
+          settings={settingsItems}
+          selectedIndex={menuIndex}
+          onToggle={toggleSetting}
+        />
       )}
-      {isProcessing && (
-        <Box marginTop={1}>
-          <WorkingIndicator />
-          {pendingCount > 0 && <Text color="yellow"> · {pendingCount} queued</Text>}
+      <ProviderMenu
+        menu={menu?.type === "settings" ? null : menu}
+        selectedIndex={menuIndex}
+        apikeyInput={apikeyInput}
+        dynamicModels={dynamicModels}
+        modelsLoading={modelsLoading}
+      />
+      {hasSuggestions && !menu && (
+        <SuggestionBar
+          suggestions={suggestions}
+          selectedIndex={selectedSuggestionIndex}
+          onSelect={(idx) => setSelectedSuggestionIndex(idx)}
+          onExecute={executeSuggestion}
+        />
+      )}
+      {isProcessing && !menu && (
+        <Box>
+          <WorkingIndicator status={status || undefined} enableAnimation={enableAnimation} />
+          {pendingCount > 0 && (
+            <Text color="yellow"> · {pendingCount} queued</Text>
+          )}
         </Box>
       )}
-      <InputArea value={input} onChange={menu ? () => {} : setInput} onSubmit={handleSubmit} isProcessing={isProcessing || !!menu} hasPending={pendingCount > 0} needsSetup={needsSetup} />
-      <StatusBar modelName={modelName} isProcessing={isProcessing} tokensUsed={totalTokens} maxContext={maxContext} mcpStatus={mcpManager?.getStatusSummary()} />
+      <InputArea
+        value={input}
+        onChange={setInput}
+        onSubmit={handleSubmit}
+        isProcessing={isProcessing}
+        hasPending={pendingCount > 0}
+        needsSetup={needsSetup}
+        isDisabled={!!menu}
+        hasSuggestions={hasSuggestions}
+        selectedSuggestionIndex={selectedSuggestionIndex}
+        suggestionCount={suggestions.length}
+        onSuggestionNavigate={handleSuggestionNavigate}
+        onSuggestionFill={handleSuggestionFill}
+        onSuggestionExecute={handleSuggestionExecute}
+        onEscape={handleEscape}
+      />
+      <StatusBar
+        modelName={modelName}
+        isProcessing={isProcessing}
+        tokensUsed={totalTokens}
+        maxContext={maxContext}
+        mcpStatus={mcpManager?.getStatusSummary()}
+        cleanMode={cleanMode}
+        updateVersion={updateVersion}
+      />
     </Box>
   );
 }

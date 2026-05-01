@@ -6,6 +6,23 @@ export interface AgentConfig {
   model: string;
   maxTokens: number;
   temperature: number;
+  headers?: Record<string, string>;
+  provider?: string;
+}
+
+export interface DiffLine {
+  type: "add" | "remove" | "context";
+  oldLineNo?: number;
+  newLineNo?: number;
+  content: string;
+}
+
+export interface DiffResult {
+  filePath: string;
+  lines: DiffLine[];
+  addedCount: number;
+  removedCount: number;
+  isNewFile: boolean;
 }
 
 export interface AgentMessage {
@@ -15,6 +32,8 @@ export interface AgentMessage {
   toolArgs?: unknown;
   isThinking?: boolean;
   thinkingTime?: number; // время в миллисекундах
+  diff?: DiffResult;
+  isPending?: boolean;
 }
 
 export interface ToolCallChunk {

@@ -12,7 +12,8 @@ export class LLMClient {
     this.openai = new OpenAI({
       apiKey: config.apiKey,
       baseURL: config.baseURL,
-      timeout: 120_000, // 2 min timeout
+      timeout: 120_000,
+      defaultHeaders: config.headers || {},
     });
 
     logger.info("LLMClient initialized", { model: config.model });
@@ -170,11 +171,14 @@ export class LLMClient {
         const requestParams: any = {
           model: this._config.model,
           messages: messages,
-          temperature: this._config.temperature,
-          top_p: 1,
           max_tokens: this._config.maxTokens,
           stream: true,
         };
+
+        // Some providers reject both temperature and top_p — only send temperature
+        if (this._config.temperature !== 1) {
+          requestParams.temperature = this._config.temperature;
+        }
 
         if (tools && tools.length > 0) {
           requestParams.tools = tools;

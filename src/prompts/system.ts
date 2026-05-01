@@ -1,3 +1,83 @@
+import * as fs from "fs";
+import * as path from "path";
+
+// Walk upwards from cwd to find project root (directory with .git, package.json, etc.)
+export function findProjectRoot(cwd: string): string {
+  const markers = [".git", "package.json", "Cargo.toml", "go.mod", "pyproject.toml", ".hg"];
+  let dir = cwd;
+  while (dir !== path.dirname(dir)) {
+    for (const marker of markers) {
+      if (fs.existsSync(path.join(dir, marker))) {
+        return dir;
+      }
+    }
+    dir = path.dirname(dir);
+  }
+  return cwd;
+}
+
+// Collect all AGENTS.md files from project root down to cwd, concatenate
+function readAgentsMd(cwd: string): string | null {
+  const root = findProjectRoot(cwd);
+
+  // Build path from root to cwd
+  const dirs: string[] = [];
+  let dir = cwd;
+  while (true) {
+    dirs.unshift(dir);
+    if (dir === root) break;
+    const parent = path.dirname(dir);
+    if (parent === dir) break; // filesystem root
+    dir = parent;
+  }
+
+  const parts: string[] = [];
+  for (const d of dirs) {
+    const candidates = [
+      path.join(d, "AGENTS.md"),
+      path.join(d, ".agents", "AGENTS.md"),
+    ];
+    for (const p of candidates) {
+      try {
+        if (fs.existsSync(p)) {
+          const content = fs.readFileSync(p, "utf-8").trim();
+          if (content) parts.push(content);
+          break; // only one AGENTS.md per directory
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  return parts.length > 0 ? parts.join("\n\n--- project-doc ---\n\n") : null;
+}
+
+// Read project memory file (.tod/memory.md)
+function readMemory(cwd: string): string | null {
+  const root = findProjectRoot(cwd);
+  const candidates = [
+    path.join(root, ".tod", "memory.md"),
+    path.join(root, ".tod", "MEMORY.md"),
+  ];
+  for (const p of candidates) {
+    try {
+      if (fs.existsSync(p)) {
+        const content = fs.readFileSync(p, "utf-8").trim();
+        if (content) return content;
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  return null;
+}
+
+export function getMemoryPath(cwd: string): string {
+  const root = findProjectRoot(cwd);
+  return path.join(root, ".tod", "memory.md");
+}
+
 export function getSystemPrompt(
   cwd: string,
   mcpToolDescriptions?: string,
@@ -7,6 +87,8 @@ export function getSystemPrompt(
     month: "long",
     day: "numeric",
   });
+  const agentsMd = readAgentsMd(cwd);
+  const memory = readMemory(cwd);
   return `You are TOD - the world's most capable autonomous coding agent. You operate directly in the developer's terminal and solve real engineering tasks end-to-end without hand-holding.
 
 IDENTITY:
@@ -46,6 +128,7 @@ TOOLS:
 - execute_shell(command) - any shell command: git, npm, grep, find, curl, etc.
 - list_directory(path) - list files and dirs
 - create_directory(path) - create directory
+- remember(content) - save a note to project memory (persists across sessions). Use this when the user asks you to remember something, or when you discover important project facts worth keeping.
 
 SHELL TIPS:
 - Prefer execute_shell for searching: grep -r "pattern" . --include="*.ts"
@@ -64,6 +147,20 @@ MCP TOOLS (external servers):
 ${mcpToolDescriptions}
 - MCP tools are named mcp__<server>__<tool> - call them like any other tool
 - They connect to external services and may have additional capabilities`
+      : ""
+  }${
+    memory
+      ? `
+
+PROJECT MEMORY (from .tod/memory.md):
+${memory}`
+      : ""
+  }${
+    agentsMd
+      ? `
+
+PROJECT INSTRUCTIONS (from AGENTS.md):
+${agentsMd}`
       : ""
   }`;
 }

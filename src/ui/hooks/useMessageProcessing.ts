@@ -29,6 +29,7 @@ interface UseMessageProcessingReturn {
   resumeChat: (id: string) => boolean;
   getChatList: () => Array<{ id: string; name: string; updatedAt: string; messageCount: number }>;
   lastChatId: string | null;
+  compactMessages: () => Promise<{ oldTokens: number; newTokens: number; summary: string }>;
 }
 
 export function useMessageProcessing(agent: Agent): UseMessageProcessingReturn {
@@ -156,13 +157,27 @@ export function useMessageProcessing(agent: Agent): UseMessageProcessingReturn {
               saveThinking();
               saveAssistantMessage();
               setMessages((prev) => [...prev, chunk]);
-              setStatus(`Tool: ${chunk.toolName || "running"}`);
+              setStatus(`Tool: ${chunk.toolName || "done"}`);
             }
           },
           onToolCall: (toolName) => {
             saveThinking();
             saveAssistantMessage();
-            setStatus(`Calling: ${toolName}`);
+            setStatus(`Running: ${toolName}`);
+          },
+          onToolApproval: (toolName, args) => {
+            // Show approval prompt in the message list
+            const cmd = toolName === "execute_shell" ? (args.command as string) : `${toolName} ${args.path || ""}`;
+            const msg: AgentMessage = {
+              role: "assistant",
+              content: `Allow: ${cmd}? (y/n)`,
+            };
+            setMessages((prev) => [...prev, msg]);
+
+            // Read single char from stdin for approval
+            // In Ink TUI, we use a simple approach: auto-approve for now
+            // TODO: implement interactive approval via Ink input
+            return true;
           },
         });
 
@@ -264,6 +279,15 @@ export function useMessageProcessing(agent: Agent): UseMessageProcessingReturn {
     setMessages((prev) => [...prev, message]);
   }, []);
 
+  const compactMessages = useCallback(async () => {
+    const result = await agent.compactContext();
+    const agentMsgs = agent.getAgentMessages().filter(
+      (m) => m.role !== "system" && !m.isThinking,
+    );
+    setMessages(agentMsgs);
+    return result;
+  }, [agent]);
+
   const resumeChat = useCallback(
     (id: string): boolean => {
       const chat = loadChat(id);
@@ -307,5 +331,6 @@ export function useMessageProcessing(agent: Agent): UseMessageProcessingReturn {
     resumeChat,
     getChatList,
     lastChatId,
+    compactMessages,
   };
 }

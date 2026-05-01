@@ -7,14 +7,21 @@ import { logger } from "./services/logger.js";
 import { setMcpManager } from "./tools/index.js";
 import { loadChat, getCurrentChatId } from "./services/chat-storage.js";
 
-// Parse --resume <id> from CLI args
+// Parse CLI args
 const args = process.argv.slice(2);
 let resumeChatId: string | undefined;
+let promptArg: string | undefined;
 
 for (let i = 0; i < args.length; i++) {
-  if (args[i] === "--resume" && args[i + 1]) {
+  if ((args[i] === "--resume" || args[i] === "-r") && args[i + 1]) {
     resumeChatId = args[i + 1];
-    break;
+    i++; // skip the value
+    continue;
+  }
+  if ((args[i] === "--prompt" || args[i] === "-p") && args[i + 1]) {
+    promptArg = args[i + 1];
+    i++; // skip the value
+    continue;
   }
 }
 
@@ -29,7 +36,7 @@ try {
   process.exit(1);
 }
 
-const agentConfig = configService.getConfig();
+const agentConfig = configService.getAgentConfig();
 const agent = new Agent(agentConfig);
 
 // Initialize MCP servers
@@ -63,9 +70,39 @@ if (hasMcpServers) {
 
 logger.info("Application initialized", {
   model: configService.getModel(),
-  ui: "ink",
+  ui: promptArg ? "non-interactive" : "ink",
   resume: resumeChatId || "none",
 });
+
+// Non-interactive mode: run a single prompt and print result to stdout
+if (promptArg) {
+  if (hasMcpServers) {
+    await mcpManager.connectAll(mcpServers);
+    const descriptions = mcpManager.getToolDescriptions();
+    if (descriptions) agent.setMcpToolDescriptions(descriptions);
+  }
+
+  let output = "";
+  try {
+    await agent.processMessage(promptArg, {
+      onChunk: (chunk) => {
+        if (chunk.role === "assistant" && !chunk.isThinking) {
+          output += chunk.content;
+        }
+      },
+      onToolCall: () => {},
+    });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`Error: ${msg}\n`);
+    await mcpManager.shutdown();
+    process.exit(1);
+  }
+
+  process.stdout.write(output.trim() + "\n");
+  await mcpManager.shutdown();
+  process.exit(0);
+}
 
 if (!process.stdin.isTTY) {
   console.error("Error: This application requires an interactive TTY.");
@@ -83,7 +120,7 @@ const { waitUntilExit } = render(
   React.default.createElement(App, {
     agent,
     mcpManager: hasMcpServers ? mcpManager : undefined,
-    version: "v1.3.1",
+    version: "v1.4.0",
     resumeChatId,
   }),
 );
@@ -95,13 +132,13 @@ const lastChatId = getCurrentChatId();
 if (lastChatId) {
   const chat = loadChat(lastChatId);
   const name = chat ? chat.name : lastChatId;
-  console.log(`\nGoodbye! Resume: tod --resume ${lastChatId}`);
+  console.log(`\n  Bye! Resume: tod -r ${lastChatId}`);
   if (chat && chat.name) {
     console.log(`  (${name})`);
   }
   console.log();
 } else {
-  console.log("\nGoodbye!");
+  console.log("\n  Bye!\n");
 }
 
 await mcpManager.shutdown();
