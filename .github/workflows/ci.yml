@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
 
     - name: Setup Bun
       uses: oven-sh/setup-bun@v2
@@ -37,15 +37,15 @@ jobs:
       contents: write
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
 
     - name: Setup Bun
       uses: oven-sh/setup-bun@v2
 
     - name: Setup Node.js (for npm publish)
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@v5
       with:
-        node-version: '20.x'
+        node-version: '22.x'
         registry-url: 'https://registry.npmjs.org'
 
     - name: Install dependencies
@@ -57,8 +57,8 @@ jobs:
     - name: Run tests
       run: bun test
 
-    - name: Create Release
-      uses: softprops/action-gh-release@v1
+    - name: Create or Update Release
+      uses: softprops/action-gh-release@v2
       with:
         files: |
           dist/**
