@@ -3,7 +3,7 @@ import { config } from "dotenv";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
-import { providers, getProvider } from "./providers.js";
+import { providers, getProvider, getProviderOrCustom } from "./providers.js";
 import type { AgentConfig } from "../core/types.js";
 
 config();
@@ -321,7 +321,7 @@ export class ConfigService {
   }
 
   setProvider(providerId: string, apiKey?: string): string {
-    const provider = getProvider(providerId);
+    const provider = getProviderOrCustom(providerId, this.config.providers);
     if (!provider) return `Unknown provider: ${providerId}`;
 
     const cfg = this.getProviderConfig(providerId);

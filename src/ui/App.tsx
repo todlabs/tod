@@ -8,8 +8,10 @@ import { findProjectRoot, getMemoryPath } from "../prompts/system.js";
 import { expandFileMentions } from "../services/file-mentions.js";
 import { getSkillByName, discoverSkills, getSkillsDir, sanitizeSkillName } from "../services/skills.js";
 import {
-  providers,
+  providers as hardcodedProviders,
   getProvider,
+  getProviderOrCustom,
+  getAllProviders,
   getModelInfo,
   fetchModelsFromAPI,
   type Provider,
@@ -263,12 +265,14 @@ function ProviderMenu({
   apikeyInput,
   dynamicModels,
   modelsLoading,
+  allProviders,
 }: {
   menu: MenuMode | null;
   selectedIndex: number;
   apikeyInput: string;
   dynamicModels: ModelInfo[] | null;
   modelsLoading: boolean;
+  allProviders: Provider[];
 }) {
   if (!menu) return null;
 
@@ -277,7 +281,7 @@ function ProviderMenu({
     return (
       <Box flexDirection="column" marginTop={1}>
         <Text color="white">Provider:</Text>
-        {providers.map((p, idx) => {
+        {allProviders.map((p, idx) => {
           const sel = idx === selectedIndex;
           const isCurrent = p.id === currentProvider;
           return (
@@ -493,6 +497,9 @@ function App({ agent, mcpManager, version, resumeChatId, onCurrentChatChange }: 
   const [apikeyInput, setApikeyInput] = useState("");
   const [dynamicModels, setDynamicModels] = useState<ModelInfo[] | null>(null);
   const [modelsLoading, setModelsLoading] = useState(false);
+
+  // Merge hardcoded + custom providers from config
+  const allProviders = getAllProviders(configService.getConfig().providers);
   const [updateVersion, setUpdateVersion] = useState<string | null>(null);
 
   // Check for updates on startup
@@ -554,7 +561,7 @@ function App({ agent, mcpManager, version, resumeChatId, onCurrentChatChange }: 
     const maxContext = (() => {
       const providerId = configService.getProvider() || "fireworks";
       const modelId = configService.getModel();
-      const info = getModelInfo(providerId, modelId);
+      const info = getModelInfo(providerId, modelId, configService.getConfig().providers);
       return info?.contextLength || 128000;
     })();
     const threshold = uiSettings.autoCompactThreshold || 80;
@@ -663,6 +670,7 @@ function App({ agent, mcpManager, version, resumeChatId, onCurrentChatChange }: 
       setSuggestions([]);
       setSelectedSuggestionIndex(-1);
       setInput("");
+      suggestionExecutedRef.current = false;
       handleCommand(item.name!);
     } else {
       setInput(applyFileSuggestion(input, item.path!, item.isDir));
@@ -821,7 +829,7 @@ function App({ agent, mcpManager, version, resumeChatId, onCurrentChatChange }: 
       }
       if (menu.type === "provider-select") {
         if (key.downArrow) {
-          setMenuIndex((prev) => Math.min(prev + 1, providers.length - 1));
+          setMenuIndex((prev) => Math.min(prev + 1, allProviders.length - 1));
           return;
         }
         if (key.upArrow) {
@@ -829,7 +837,7 @@ function App({ agent, mcpManager, version, resumeChatId, onCurrentChatChange }: 
           return;
         }
         if (key.return) {
-          selectProvider(providers[menuIndex]);
+          selectProvider(allProviders[menuIndex]);
           return;
         }
         return;
@@ -913,7 +921,7 @@ function App({ agent, mcpManager, version, resumeChatId, onCurrentChatChange }: 
       case "/model":
       case "/models": {
         const providerId = configService.getProvider() || "fireworks";
-        const provider = getProvider(providerId);
+        const provider = getProviderOrCustom(providerId, configService.getConfig().providers);
         if (provider) openModelMenu(provider);
         break;
       }
@@ -1159,7 +1167,7 @@ Write the file using the write_file tool. Make it concise and practical — this
   const maxContext = (() => {
     const providerId = configService.getProvider() || "fireworks";
     const modelId = configService.getModel();
-    const info = getModelInfo(providerId, modelId);
+    const info = getModelInfo(providerId, modelId, configService.getConfig().providers);
     return info?.contextLength || 128000;
   })();
 
@@ -1188,6 +1196,7 @@ Write the file using the write_file tool. Make it concise and practical — this
         apikeyInput={apikeyInput}
         dynamicModels={dynamicModels}
         modelsLoading={modelsLoading}
+        allProviders={allProviders}
       />
       {hasSuggestions && !menu && (
         <SuggestionBar

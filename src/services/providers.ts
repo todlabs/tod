@@ -352,9 +352,76 @@ export function getProviderByBaseURL(baseURL: string): Provider | undefined {
 export function getModelInfo(
   providerId: string,
   modelId: string,
+  configProviders?: Record<string, CustomProviderConfig>,
 ): ModelInfo | undefined {
-  const provider = getProvider(providerId);
+  const provider = getProviderOrCustom(providerId, configProviders);
   return provider?.models.find((m) => m.id === modelId);
+}
+
+// --- Custom provider support from config ---
+
+export interface CustomProviderConfig {
+  apiKey: string;
+  baseURL: string;
+  model: string;
+  maxTokens: number;
+  temperature: number;
+  headers: Record<string, string>;
+}
+
+/**
+ * Build a Provider object from a custom config entry.
+ * Custom providers have no hardcoded models — they rely on dynamic API fetching.
+ */
+export function customProviderFromConfig(
+  id: string,
+  cfg: CustomProviderConfig,
+): Provider {
+  return {
+    id,
+    name: id.charAt(0).toUpperCase() + id.slice(1).replace(/[-_]/g, " "),
+    baseURL: cfg.baseURL,
+    defaultModel: cfg.model,
+    defaultHeaders: Object.keys(cfg.headers).length > 0 ? cfg.headers : undefined,
+    models: [], // will be fetched dynamically via fetchModelsFromAPI
+  };
+}
+
+/**
+ * Merge hardcoded providers with custom providers from config.
+ * Custom = any provider ID in config that doesn't exist in hardcoded list and has a baseURL.
+ */
+export function getAllProviders(
+  configProviders: Record<string, CustomProviderConfig>,
+): Provider[] {
+  const hardcodedIds = new Set(providers.map((p) => p.id));
+  const result = [...providers];
+
+  for (const [id, cfg] of Object.entries(configProviders)) {
+    if (!hardcodedIds.has(id) && cfg.baseURL) {
+      result.push(customProviderFromConfig(id, cfg));
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Get a Provider (hardcoded or custom) by ID.
+ * For custom providers, builds from config data.
+ */
+export function getProviderOrCustom(
+  id: string,
+  configProviders?: Record<string, CustomProviderConfig>,
+): Provider | undefined {
+  const hardcoded = getProvider(id);
+  if (hardcoded) return hardcoded;
+
+  if (configProviders && configProviders[id] && configProviders[id].baseURL) {
+    return customProviderFromConfig(id, configProviders[id]);
+  }
+
+  return undefined;
 }
 
 export function detectProvider(baseURL: string): Provider | undefined {

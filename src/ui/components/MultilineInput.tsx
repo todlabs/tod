@@ -256,7 +256,6 @@ export default function MultilineInput({
           onChange(newValue);
           setCursor((c) => c + 1);
         } else {
-          setCursor(0);
           onSubmit(value);
         }
         return;
