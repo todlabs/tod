@@ -70,4 +70,82 @@ describe("Tools", () => {
     expect(diff.removedCount).toBeGreaterThan(0);
     expect(diff.filePath).toBe("test.ts");
   });
+
+  test("edit_file replaces a unique substring and returns diff", async () => {
+    const tmpPath = `./test-edit-${Date.now()}.txt`;
+    try {
+      await executeTool("write_file", {
+        path: tmpPath,
+        content: "alpha\nbeta\ngamma\n",
+      });
+      const r = await executeTool("edit_file", {
+        path: tmpPath,
+        old_string: "beta",
+        new_string: "BETA",
+      });
+      expect(r.diff).toBeDefined();
+      expect(r.text).toContain("Edited");
+      const after = await executeTool("read_file", { path: tmpPath });
+      expect(after.text).toContain("BETA");
+      expect(after.text).not.toContain("\nbeta\n");
+    } finally {
+      try { await require("fs").promises.unlink(tmpPath); } catch {}
+    }
+  });
+
+  test("edit_file fails when old_string is not unique without replace_all", async () => {
+    const tmpPath = `./test-edit-dup-${Date.now()}.txt`;
+    try {
+      await executeTool("write_file", {
+        path: tmpPath,
+        content: "x\nx\n",
+      });
+      const r = await executeTool("edit_file", {
+        path: tmpPath,
+        old_string: "x",
+        new_string: "y",
+      });
+      expect(r.text.toLowerCase()).toContain("not unique");
+    } finally {
+      try { await require("fs").promises.unlink(tmpPath); } catch {}
+    }
+  });
+
+  test("edit_file replace_all swaps every occurrence", async () => {
+    const tmpPath = `./test-edit-all-${Date.now()}.txt`;
+    try {
+      await executeTool("write_file", {
+        path: tmpPath,
+        content: "x\nx\nx\n",
+      });
+      const r = await executeTool("edit_file", {
+        path: tmpPath,
+        old_string: "x",
+        new_string: "y",
+        replace_all: true,
+      });
+      expect(r.text).toContain("Edited");
+      const after = await executeTool("read_file", { path: tmpPath });
+      expect(after.text).toBe("y\ny\ny\n");
+    } finally {
+      try { await require("fs").promises.unlink(tmpPath); } catch {}
+    }
+  });
+
+  test("glob finds files by pattern", async () => {
+    const r = await executeTool("glob", {
+      pattern: "**/package.json",
+      path: ".",
+    });
+    expect(r.text).toContain("package.json");
+  });
+
+  test("grep finds matches in files", async () => {
+    const r = await executeTool("grep", {
+      pattern: "@todlabs/tod",
+      path: ".",
+      glob: "package.json",
+    });
+    expect(r.text).toContain("@todlabs/tod");
+  });
 });

@@ -217,11 +217,21 @@ export function useMessageProcessing(agent: Agent): UseMessageProcessingReturn {
   );
 
   const drainQueue = useCallback(async () => {
-    const next = queueRef.current.shift();
-    if (next !== undefined) {
+    while (queueRef.current.length > 0) {
+      if (shouldStopRef.current) {
+        queueRef.current = [];
+        setPendingCount(0);
+        return;
+      }
+      const next = queueRef.current.shift()!;
       setPendingCount(queueRef.current.length);
-      await processOneMessage(next);
-      drainQueue();
+      try {
+        await processOneMessage(next);
+      } catch (error) {
+        logger.error("Queued message failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
   }, [processOneMessage]);
 
@@ -232,7 +242,13 @@ export function useMessageProcessing(agent: Agent): UseMessageProcessingReturn {
         queueRef.current.push(message);
         setPendingCount(queueRef.current.length);
       } else {
-        processOneMessage(message).then(() => drainQueue());
+        processOneMessage(message)
+          .then(() => drainQueue())
+          .catch((error) => {
+            logger.error("queueMessage failed", {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          });
       }
     },
     [processOneMessage, drainQueue],
@@ -246,8 +262,14 @@ export function useMessageProcessing(agent: Agent): UseMessageProcessingReturn {
         setPendingCount(queueRef.current.length);
         return;
       }
-      await processOneMessage(userMessage);
-      drainQueue();
+      try {
+        await processOneMessage(userMessage);
+        await drainQueue();
+      } catch (error) {
+        logger.error("processMessage failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     },
     [processOneMessage, drainQueue],
   );
@@ -257,6 +279,10 @@ export function useMessageProcessing(agent: Agent): UseMessageProcessingReturn {
       shouldStopRef.current = true;
       setShouldStop(true);
       setStatus("Stopping...");
+      // Drop any queued messages — user clicked stop, they don't want
+      // the queue to keep auto-processing after the abort lands.
+      queueRef.current = [];
+      setPendingCount(0);
       agent.abort();
     }
   }, [isProcessing, agent]);

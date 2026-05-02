@@ -54,24 +54,62 @@ function readAgentsMd(cwd: string): string | null {
   return parts.length > 0 ? parts.join("\n\n--- project-doc ---\n\n") : null;
 }
 
-// Read project memory file (.tod/memory.md)
+// Read project memory.
+// New layout: .tod/memory/MEMORY.md (index) + .tod/memory/<name>.md per entry.
+// Old layout: .tod/memory.md (single file). Both are loaded if present.
 function readMemory(cwd: string): string | null {
   const root = findProjectRoot(cwd);
-  const candidates = [
+  const parts: string[] = [];
+
+  // New layout — index + entries
+  const memoryDir = path.join(root, ".tod", "memory");
+  const indexPath = path.join(memoryDir, "MEMORY.md");
+  if (fs.existsSync(indexPath)) {
+    try {
+      const index = fs.readFileSync(indexPath, "utf-8").trim();
+      if (index) parts.push(`Memory index:\n${index}`);
+    } catch {
+      /* ignore */
+    }
+
+    // Load each memory file content (capped to keep prompt reasonable)
+    try {
+      const entries = fs
+        .readdirSync(memoryDir)
+        .filter((f) => f.endsWith(".md") && f !== "MEMORY.md");
+      const bodies: string[] = [];
+      for (const f of entries) {
+        try {
+          const content = fs.readFileSync(path.join(memoryDir, f), "utf-8").trim();
+          if (content) bodies.push(content);
+        } catch {
+          /* ignore */
+        }
+      }
+      if (bodies.length > 0) parts.push(bodies.join("\n\n"));
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // Old layout fallback / supplement
+  const legacyCandidates = [
     path.join(root, ".tod", "memory.md"),
     path.join(root, ".tod", "MEMORY.md"),
   ];
-  for (const p of candidates) {
+  for (const p of legacyCandidates) {
     try {
       if (fs.existsSync(p)) {
         const content = fs.readFileSync(p, "utf-8").trim();
-        if (content) return content;
+        if (content) parts.push(content);
+        break;
       }
     } catch {
       /* ignore */
     }
   }
-  return null;
+
+  return parts.length > 0 ? parts.join("\n\n") : null;
 }
 
 export function getMemoryPath(cwd: string): string {
@@ -112,7 +150,7 @@ CORE PRINCIPLES:
 
 WORKFLOW:
 1. Understand the task (use thinking for analysis and planning)
-2. Explore relevant code (list_directory, read_file, execute_shell with grep/find)
+2. Explore relevant code (glob, grep, list_directory, read_file)
 3. Execute the plan step by step
 4. Send a short status update before each major step
 5. Report result concisely when done
@@ -126,18 +164,21 @@ THINKING vs MESSAGES TO USER:
 
 TOOLS:
 - read_file(path) - read file contents
-- write_file(path, content) - create or overwrite file
-- execute_shell(command) - any shell command: git, npm, grep, find, curl, etc.
+- write_file(path, content) - create a new file or fully rewrite an existing one
+- edit_file(path, old_string, new_string, replace_all?) - exact-string replacement in an existing file. Prefer this over write_file for targeted changes; cheaper in tokens, easier to review. old_string must be unique unless replace_all is true.
+- execute_shell(command) - any shell command: git, npm, curl, etc.
 - list_directory(path) - list files and dirs
 - create_directory(path) - create directory
-- remember(content) - save a note to project memory (persists across sessions). Use this when the user asks you to remember something, or when you discover important project facts worth keeping.
-- load_skill(name?) - load a skill by name, or call without args to list available skills. Skills contain project-specific instructions (code style, conventions, workflows). Load relevant skills before starting a matching task.
+- glob(pattern, path?) - find files by glob pattern, e.g. "src/**/*.ts". Faster than execute_shell with find.
+- grep(pattern, path?, glob?, ignore_case?, output_mode?) - search file contents with regex (ripgrep when available). Prefer this over execute_shell with grep.
+- remember(content, type?, memory_name?) - save a note to project memory. type ∈ {user, feedback, project, reference}; passing the same memory_name later updates the entry. Use when the user explicitly asks you to remember something or when you uncover non-obvious facts worth keeping.
+- load_skill(name?) - load a skill by name, or call without args to list available skills. Skills with triggers also auto-activate when the user message matches.
 
-SHELL TIPS:
-- Prefer execute_shell for searching: grep -r "pattern" . --include="*.ts"
-- Use git commands freely: git log, git diff, git status
-- Chain commands with && when needed
-- Check exit codes in output when debugging
+SEARCH TIPS:
+- Use glob to find files by name pattern; use grep to search inside file contents.
+- Fall back to execute_shell only for things glob/grep cannot express (e.g. git log filters).
+- Use git commands freely: git log, git diff, git status.
+- Chain shell commands with && when needed; check exit codes in output when debugging.
 
 ERROR HANDLING:
 - Tool error -> read the message carefully -> fix the root cause -> retry
@@ -174,9 +215,24 @@ ${alwaysOnSkills}`
   }`;
 }
 
-export const COMPACT_SUMMARY_PROMPT = `Summarize this conversation. Include:
-- What the user asked for
-- What was done (files changed, commands run, bugs fixed)
-- Current state of the work
-- Any important findings or decisions made
-Be concise but complete. Plain text only.`;
+export const COMPACT_SUMMARY_PROMPT = `Produce a structured session summary so a future agent can resume without re-reading the full transcript. Use exactly these section headers, each on its own line, plain text only (no markdown bold/headings):
+
+USER GOALS:
+- One bullet per distinct ask or requirement.
+
+FILES READ:
+- path: short note on what was learned.
+
+FILES MODIFIED:
+- path: what changed and why.
+
+COMMANDS RUN:
+- command: outcome (success / error / key output).
+
+KEY DECISIONS:
+- Decisions or constraints the agent committed to (architectural choices, naming, scope cuts).
+
+OPEN QUESTIONS / PENDING:
+- Anything still unfinished or unanswered. Empty bullet "- (none)" if nothing.
+
+Be specific (real paths, real commands, real reasons). Skip filler. Omit a section if truly empty by writing "- (none)".`;

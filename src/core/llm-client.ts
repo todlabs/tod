@@ -2,6 +2,7 @@ import OpenAI from "openai";
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 import type { AgentConfig, StreamChunk, ToolCallChunk } from "./types.js";
 import { logger } from "../services/logger.js";
+import { COMPACT_SUMMARY_PROMPT } from "../prompts/system.js";
 
 export class LLMClient {
   private openai: OpenAI;
@@ -338,8 +339,7 @@ export class LLMClient {
           messages: [
             {
               role: "system",
-              content:
-                "Summarize the following conversation in a concise way, preserving key information and context.",
+              content: COMPACT_SUMMARY_PROMPT,
             },
             {
               role: "user",
@@ -347,7 +347,7 @@ export class LLMClient {
             },
           ],
           temperature: 0.3,
-          max_tokens: 1000,
+          max_tokens: 1500,
           stream: false,
         });
 
