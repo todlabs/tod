@@ -7,6 +7,7 @@ import { version as pkgVersion } from "../package.json";
 import { logger } from "./services/logger.js";
 import { setMcpManager } from "./tools/index.js";
 import { loadChat, getCurrentChatId } from "./services/chat-storage.js";
+import { expandFileMentions } from "./services/file-mentions.js";
 import { spawn, spawnSync } from "child_process";
 
 // Last-resort guards — keep the process alive on unexpected errors
@@ -178,7 +179,7 @@ if (promptArg) {
 
   let output = "";
   try {
-    await agent.processMessage(promptArg, {
+    await agent.processMessage(expandFileMentions(promptArg), {
       onChunk: (chunk) => {
         if (chunk.role === "assistant" && !chunk.isThinking) {
           output += chunk.content;
@@ -210,19 +211,26 @@ const { default: App } = await import("./ui/App.js");
 
 console.clear();
 
+let activeChatId: string | null = null;
+let sawAppChatState = false;
+
 const { waitUntilExit } = render(
   React.default.createElement(App, {
     agent,
     mcpManager: hasMcpServers ? mcpManager : undefined,
     version: `v${pkgVersion}`,
     resumeChatId,
+    onCurrentChatChange: (chatId: string | null) => {
+      sawAppChatState = true;
+      activeChatId = chatId;
+    },
   }),
 );
 
 await waitUntilExit();
 
 // Goodbye + resume hint
-const lastChatId = getCurrentChatId();
+const lastChatId = sawAppChatState ? activeChatId : getCurrentChatId();
 if (lastChatId) {
   const chat = loadChat(lastChatId);
   const name = chat ? chat.name : lastChatId;

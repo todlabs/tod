@@ -1,5 +1,7 @@
 import React, { useState, useCallback, useEffect } from "react";
 import { Box, Text, useInput } from "ink";
+import { existsSync } from "fs";
+import { resolve } from "path";
 import { useTerminalSize } from "../hooks/useTerminalSize.js";
 
 interface MultilineInputProps {
@@ -18,6 +20,81 @@ interface MultilineInputProps {
 }
 
 const MAX_VISIBLE_LINES = 8;
+const FILE_MENTION_RE = /@[^\s@]+/g;
+
+type FileMentionRange = { start: number; end: number };
+
+function isExistingFileMention(token: string): boolean {
+  const filePath = token.slice(1).replace(/[\\/]$/, "");
+  return filePath.length > 0 && existsSync(resolve(process.cwd(), filePath));
+}
+
+function getFileMentionRanges(text: string): FileMentionRange[] {
+  const ranges: FileMentionRange[] = [];
+  let match: RegExpExecArray | null;
+  FILE_MENTION_RE.lastIndex = 0;
+
+  while ((match = FILE_MENTION_RE.exec(text)) !== null) {
+    if (isExistingFileMention(match[0])) {
+      ranges.push({ start: match.index, end: match.index + match[0].length });
+    }
+  }
+
+  return ranges;
+}
+
+function getMentionBeforeCursor(text: string, cursor: number): FileMentionRange | null {
+  for (const range of getFileMentionRanges(text)) {
+    if (cursor > range.start && cursor <= range.end) return range;
+    if (cursor === range.end + 1 && /\s/.test(text[range.end] || "")) {
+      return { start: range.start, end: cursor };
+    }
+  }
+  return null;
+}
+
+function getMentionAfterCursor(text: string, cursor: number): FileMentionRange | null {
+  for (const range of getFileMentionRanges(text)) {
+    if (cursor >= range.start && cursor < range.end) return range;
+  }
+  return null;
+}
+
+function snapCursorOutOfMention(text: string, cursor: number): number {
+  for (const range of getFileMentionRanges(text)) {
+    if (cursor > range.start && cursor < range.end) {
+      return range.end + (/\s/.test(text[range.end] || "") ? 1 : 0);
+    }
+  }
+  return cursor;
+}
+
+function renderTextWithFileMentions(text: string): React.ReactNode[] {
+  const nodes: React.ReactNode[] = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  FILE_MENTION_RE.lastIndex = 0;
+
+  while ((match = FILE_MENTION_RE.exec(text)) !== null) {
+    if (!isExistingFileMention(match[0])) continue;
+    if (match.index > lastIndex) {
+      nodes.push(text.slice(lastIndex, match.index));
+    }
+    const filePath = match[0].slice(1); // without @
+    nodes.push(
+      <React.Fragment key={`${match.index}-${match[0]}`}>
+        <Text bold>{filePath}</Text>
+      </React.Fragment>,
+    );
+    lastIndex = match.index + match[0].length;
+  }
+
+  if (lastIndex < text.length) {
+    nodes.push(text.slice(lastIndex));
+  }
+
+  return nodes;
+}
 
 export default function MultilineInput({
   value,
@@ -40,6 +117,11 @@ export default function MultilineInput({
   useEffect(() => {
     if (cursor > value.length) {
       setCursor(value.length);
+      return;
+    }
+    const nextCursor = snapCursorOutOfMention(value, cursor);
+    if (nextCursor !== cursor) {
+      setCursor(nextCursor);
     }
   }, [value, cursor]);
 
@@ -110,11 +192,13 @@ export default function MultilineInput({
 
       // Cursor navigation
       if (key.leftArrow) {
-        setCursor((c) => Math.max(0, c - 1));
+        const mention = getMentionBeforeCursor(value, cursor);
+        setCursor(mention ? mention.start : Math.max(0, cursor - 1));
         return;
       }
       if (key.rightArrow) {
-        setCursor((c) => Math.min(value.length, c + 1));
+        const mention = getMentionAfterCursor(value, cursor);
+        setCursor(mention ? mention.end : Math.min(value.length, cursor + 1));
         return;
       }
       if (key.upArrow) {
@@ -187,9 +271,12 @@ export default function MultilineInput({
         input === "\x7f"
       ) {
         if (cursor > 0) {
-          const newValue = value.slice(0, cursor - 1) + value.slice(cursor);
+          const mention = getMentionBeforeCursor(value, cursor);
+          const deleteStart = mention?.start ?? cursor - 1;
+          const deleteEnd = mention?.end ?? cursor;
+          const newValue = value.slice(0, deleteStart) + value.slice(deleteEnd);
           onChange(newValue);
-          setCursor((c) => c - 1);
+          setCursor(deleteStart);
         }
         return;
       }
@@ -205,9 +292,10 @@ export default function MultilineInput({
         !key.rightArrow &&
         !key.escape
       ) {
-        const newValue = value.slice(0, cursor) + input + value.slice(cursor);
+        const insertAt = snapCursorOutOfMention(value, cursor);
+        const newValue = value.slice(0, insertAt) + input + value.slice(insertAt);
         onChange(newValue);
-        setCursor((c) => c + input.length);
+        setCursor(insertAt + input.length);
       }
     },
     [
@@ -333,14 +421,14 @@ export default function MultilineInput({
         <Box key={idx}>
           {vl.cursorCol !== undefined ? (
             <>
-              <Text>{vl.text.slice(0, vl.cursorCol)}</Text>
+              <Text>{renderTextWithFileMentions(vl.text.slice(0, vl.cursorCol))}</Text>
               <Text inverse>
                 {vl.text.slice(vl.cursorCol, vl.cursorCol + 1) || " "}
               </Text>
-              <Text>{vl.text.slice(vl.cursorCol + 1)}</Text>
+              <Text>{renderTextWithFileMentions(vl.text.slice(vl.cursorCol + 1))}</Text>
             </>
           ) : (
-            <Text>{vl.text}</Text>
+            <Text>{renderTextWithFileMentions(vl.text)}</Text>
           )}
         </Box>
       ))}

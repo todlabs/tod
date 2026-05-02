@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import type { Agent, AgentMessage } from "../../agent/index.js";
 import { logger } from "../../services/logger.js";
 import {
@@ -19,7 +19,7 @@ interface UseMessageProcessingReturn {
   status: string;
   shouldStop: boolean;
   pendingCount: number;
-  processMessage: (message: string) => Promise<void>;
+  processMessage: (message: string, displayMessage?: string) => Promise<void>;
   queueMessage: (message: string) => void;
   stopProcessing: () => void;
   resetMessages: () => void;
@@ -45,6 +45,8 @@ export function useMessageProcessing(agent: Agent): UseMessageProcessingReturn {
   const queueRef = useRef<string[]>([]);
   const isProcessingRef = useRef(false);
   const firstUserMessageRef = useRef<string | null>(null);
+  const currentChatIdRef = useRef<string | null>(null);
+  const currentChatNameRef = useRef<string | null>(null);
 
   // Read last chat id from disk for resume hint
   const lastChatId = getFsCurrentChatId();
@@ -62,29 +64,41 @@ export function useMessageProcessing(agent: Agent): UseMessageProcessingReturn {
     saveChat(chat);
   }, [agent]);
 
+  const setActiveChat = useCallback((chatId: string | null, chatName: string | null) => {
+    currentChatIdRef.current = chatId;
+    currentChatNameRef.current = chatName;
+    setCurrentChatId(chatId);
+    setCurrentChatName(chatName);
+    setFsCurrentChatId(chatId);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      autoSave(currentChatIdRef.current, currentChatNameRef.current);
+    };
+  }, [autoSave]);
+
   const processOneMessage = useCallback(
-    async (userMessage: string) => {
+    async (userMessage: string, displayMessage?: string) => {
       setIsProcessing(true);
       isProcessingRef.current = true;
       setCurrentThinking("");
       setStatus("");
 
       // Ensure we have a chat session
-      let chatId = currentChatId;
-      let chatName = currentChatName;
+      let chatId = currentChatIdRef.current;
+      let chatName = currentChatNameRef.current;
       if (!chatId) {
         chatId = generateChatId();
-        const name = generateChatName(userMessage);
+        const name = generateChatName(displayMessage || userMessage);
         chatName = name;
-        setCurrentChatId(chatId);
-        setCurrentChatName(name);
-        setFsCurrentChatId(chatId);
-        firstUserMessageRef.current = userMessage;
+        setActiveChat(chatId, name);
+        firstUserMessageRef.current = displayMessage || userMessage;
       }
 
       const userMsg: AgentMessage = {
         role: "user",
-        content: userMessage,
+        content: displayMessage || userMessage,
       };
 
       setMessages((prev) => [...prev, userMsg]);
@@ -202,6 +216,7 @@ export function useMessageProcessing(agent: Agent): UseMessageProcessingReturn {
           { role: "assistant", content: `⚠ ${errorMsg}` },
         ]);
         logger.error("Message processing failed", { error: errorMsg });
+        autoSave(chatId, chatName);
       } finally {
         setIsProcessing(false);
         isProcessingRef.current = false;
@@ -213,7 +228,7 @@ export function useMessageProcessing(agent: Agent): UseMessageProcessingReturn {
         if (agent.isBusy()) agent.forceUnstick();
       }
     },
-    [agent, currentChatId, currentChatName, autoSave],
+    [agent, autoSave, setActiveChat],
   );
 
   const drainQueue = useCallback(async () => {
@@ -255,7 +270,7 @@ export function useMessageProcessing(agent: Agent): UseMessageProcessingReturn {
   );
 
   const processMessage = useCallback(
-    async (userMessage: string) => {
+    async (userMessage: string, displayMessage?: string) => {
       if (!userMessage.trim()) return;
       if (isProcessingRef.current) {
         queueRef.current.push(userMessage);
@@ -263,7 +278,7 @@ export function useMessageProcessing(agent: Agent): UseMessageProcessingReturn {
         return;
       }
       try {
-        await processOneMessage(userMessage);
+        await processOneMessage(userMessage, displayMessage);
         await drainQueue();
       } catch (error) {
         logger.error("processMessage failed", {
@@ -288,18 +303,16 @@ export function useMessageProcessing(agent: Agent): UseMessageProcessingReturn {
   }, [isProcessing, agent]);
 
   const resetMessages = useCallback(() => {
-    if (currentChatId) autoSave(currentChatId, currentChatName);
+    if (currentChatIdRef.current) autoSave(currentChatIdRef.current, currentChatNameRef.current);
     setMessages([]);
     queueRef.current = [];
     setPendingCount(0);
     agent.reset();
-    setCurrentChatId(null);
-    setCurrentChatName(null);
+    setActiveChat(null, null);
     firstUserMessageRef.current = null;
-    setFsCurrentChatId(null);
     if (agent.isBusy()) agent.forceUnstick();
     logger.info("Messages reset");
-  }, [agent, currentChatId, currentChatName, autoSave]);
+  }, [agent, autoSave, setActiveChat]);
 
   const addMessage = useCallback((message: AgentMessage) => {
     setMessages((prev) => [...prev, message]);
@@ -319,10 +332,12 @@ export function useMessageProcessing(agent: Agent): UseMessageProcessingReturn {
       const chat = loadChat(id);
       if (!chat) return false;
 
+      if (currentChatIdRef.current && currentChatIdRef.current !== chat.id) {
+        autoSave(currentChatIdRef.current, currentChatNameRef.current);
+      }
+
       agent.restoreMessages(chat.messages);
-      setCurrentChatId(chat.id);
-      setCurrentChatName(chat.name);
-      setFsCurrentChatId(chat.id);
+      setActiveChat(chat.id, chat.name);
       firstUserMessageRef.current = chat.name;
 
       const agentMsgs = agent.getAgentMessages().filter(
@@ -333,7 +348,7 @@ export function useMessageProcessing(agent: Agent): UseMessageProcessingReturn {
       logger.info("Chat resumed", { id, name: chat.name });
       return true;
     },
-    [agent],
+    [agent, autoSave, setActiveChat],
   );
 
   const getChatList = useCallback(() => {

@@ -1,8 +1,41 @@
 import React from "react";
 import { Box, Text } from "ink";
+import { existsSync, readFileSync } from "fs";
+import { resolve } from "path";
 import type { AgentMessage, DiffLine, DiffResult } from "../../core/types.js";
 import MarkdownText from "./MarkdownText.js";
 import { useTerminalSize } from "../hooks/useTerminalSize.js";
+
+const FILE_MENTION_RE = /@(\S+)/g;
+
+function isExistingFilePath(filePath: string): boolean {
+  return filePath.length > 0 && existsSync(resolve(process.cwd(), filePath));
+}
+
+function renderContentWithMentions(text: string): React.ReactNode[] {
+  const nodes: React.ReactNode[] = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  FILE_MENTION_RE.lastIndex = 0;
+
+  while ((match = FILE_MENTION_RE.exec(text)) !== null) {
+    const filePath = match[1];
+    if (!isExistingFilePath(filePath)) continue;
+    if (match.index > lastIndex) {
+      nodes.push(text.slice(lastIndex, match.index));
+    }
+    nodes.push(
+      <Text key={`m-${match.index}`} bold>{filePath}</Text>
+    );
+    lastIndex = match.index + match[0].length;
+  }
+
+  if (lastIndex < text.length) {
+    nodes.push(text.slice(lastIndex));
+  }
+
+  return nodes;
+}
 
 interface MessageListProps {
   messages: AgentMessage[];
@@ -31,7 +64,7 @@ export default function MessageList({
           {msg.role === "user" && (
             <Box>
               <Text color="gray">▸ </Text>
-              <Text color="white" wrap="wrap">{msg.content}</Text>
+              <Text color="white" wrap="wrap">{renderContentWithMentions(msg.content)}</Text>
             </Box>
           )}
 

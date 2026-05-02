@@ -116,7 +116,7 @@ export class MessageManager {
     const MAX_ASSISTANT_CONTENT = 2000;
 
     return this.messages
-      .filter((msg) => msg.role !== 'system')
+      .filter((msg, index) => !(index === 0 && msg.role === 'system'))
       .map((msg: any) => {
         if (msg.role === 'tool') {
           const content = typeof msg.content === 'string' ? msg.content : '';
@@ -274,6 +274,13 @@ export class MessageManager {
    * Saved messages no longer include system prompt (since getMessagesForSave filters it).
    */
   restoreMessages(savedMessages: ChatCompletionMessageParam[]): void {
+    const messagesToRestore =
+      savedMessages[0]?.role === 'system' &&
+      typeof savedMessages[0].content === 'string' &&
+      savedMessages[0].content.trimStart().startsWith('You are TOD -')
+        ? savedMessages.slice(1)
+        : savedMessages;
+
     // Regenerate system prompt with current cwd
     this.messages = [
       {
@@ -282,7 +289,7 @@ export class MessageManager {
       },
       // Saved messages don't include system prompt anymore,
       // but handle old format where index 0 was system prompt
-      ...(savedMessages[0]?.role === 'system' ? savedMessages.slice(1) : savedMessages),
+      ...messagesToRestore,
     ];
     this.ephemeralContext.clear();
     logger.debug('Messages restored', { count: this.messages.length });

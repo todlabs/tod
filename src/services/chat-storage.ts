@@ -32,9 +32,17 @@ export function generateChatName(firstMessage: string): string {
 
 export function saveChat(chat: ChatFile): void {
   ensureChatsDir();
-  chat.updatedAt = new Date().toISOString();
   const filePath = path.join(getChatsDir(), `${chat.id}.json`);
   try {
+    if (fs.existsSync(filePath)) {
+      try {
+        const existing = JSON.parse(fs.readFileSync(filePath, "utf-8")) as ChatFile;
+        if (existing.createdAt) chat.createdAt = existing.createdAt;
+      } catch {
+        /* ignore */
+      }
+    }
+    chat.updatedAt = new Date().toISOString();
     fs.writeFileSync(filePath, JSON.stringify(chat), "utf-8");
     logger.debug("Chat saved", { id: chat.id });
   } catch (error) {

@@ -244,12 +244,16 @@ export const providers: Provider[] = [
 interface ApiModel {
   id: string;
   context_length?: number;
+  context_size?: number;
   max_model_tokens?: number;
+  max_output_tokens?: number;
   object?: string;
   owned_by?: string;
   kind?: string;
   supports_chat?: boolean;
   supports_tools?: boolean;
+  model_type?: string;
+  features?: string[];
   contextWindow?: number;
   architecture?: {
     modality?: string;
@@ -270,7 +274,7 @@ const SKIP_PATTERNS = [
 
 function isChatModel(m: ApiModel): boolean {
   const id = m.id.toLowerCase();
-  if (m.supports_chat === false) return false;
+  if (m.supports_chat === false || m.model_type === "embedding") return false;
   for (const pat of SKIP_PATTERNS) {
     if (id.includes(pat)) return false;
   }
@@ -278,6 +282,7 @@ function isChatModel(m: ApiModel): boolean {
     return false;
   }
   if (m.supports_chat === true || m.supports_tools === true) return true;
+  if (m.model_type === "chat") return true;
   if (m.architecture?.instruct_type || m.architecture?.modality?.includes("text")) return true;
   return true;
 }
@@ -308,16 +313,17 @@ export async function fetchModelsFromAPI(
       .sort((a: ApiModel, b: ApiModel) => a.id.localeCompare(b.id));
 
     return chatModels.map((m: ApiModel) => {
-      const ctx = m.context_length || m.contextWindow || undefined;
+      const ctx = m.context_length || m.context_size || m.contextWindow || undefined;
+      const hasTools = m.supports_tools || m.features?.includes("function-calling");
       const name = m.id.split("/").pop() || m.id;
       const parts: string[] = [];
       if (ctx) parts.push(formatContextInfo(ctx));
-      if (m.supports_tools) parts.push("tools");
+      if (hasTools) parts.push("tools");
       return {
         id: m.id,
         name,
         description: parts.length > 0 ? parts.join(" · ") : "chat model",
-        maxTokens: m.max_model_tokens || 16384,
+        maxTokens: m.max_model_tokens || m.max_output_tokens || 16384,
         contextLength: ctx,
       };
     });

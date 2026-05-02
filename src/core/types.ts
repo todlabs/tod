@@ -28,6 +28,7 @@ export interface DiffResult {
 export interface AgentMessage {
   role: 'user' | 'assistant' | 'system' | 'tool';
   content: string;
+  displayContent?: string; // original text for UI display (without file expansion)
   toolName?: string;
   toolArgs?: unknown;
   isThinking?: boolean;

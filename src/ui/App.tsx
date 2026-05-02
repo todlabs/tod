@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { Box, Text, useInput, useApp } from "ink";
 import { readdirSync, writeFileSync, existsSync, mkdirSync, appendFileSync } from "fs";
-import { join } from "path";
+import { join, relative, resolve } from "path";
 import { Agent, type AgentMessage } from "../agent/index.js";
 import { configService } from "../services/config.js";
 import { findProjectRoot, getMemoryPath } from "../prompts/system.js";
+import { expandFileMentions } from "../services/file-mentions.js";
 import { getSkillByName, discoverSkills, getSkillsDir, sanitizeSkillName } from "../services/skills.js";
 import {
   providers,
@@ -39,6 +40,7 @@ interface AppProps {
   mcpManager?: McpManager;
   version: string;
   resumeChatId?: string;
+  onCurrentChatChange?: (chatId: string | null) => void;
 }
 
 type SuggestionItem = {
@@ -68,69 +70,133 @@ const SKIP_DIRS = new Set([
   "build",
 ]);
 
-function searchRecursive(
+function toSlash(value: string): string {
+  return value.replace(/\\/g, "/");
+}
+
+function fileSuggestionFromPath(
+  cwd: string,
+  fullPath: string,
+  isDir: boolean,
+): SuggestionItem {
+  const relPath = toSlash(relative(cwd, fullPath));
+  const path = `${relPath}${isDir ? "/" : ""}`;
+  return {
+    type: "file",
+    path,
+    isDir,
+    label: path,
+  };
+}
+
+function fuzzyScore(text: string, query: string): number {
+  const lt = text.toLowerCase();
+  const lq = query.toLowerCase();
+
+  // Exact name match (highest priority)
+  const name = lt.split("/").filter(Boolean).pop() || lt;
+  if (name === lq) return 0;
+  if (name.startsWith(lq)) return 1;
+  if (name.includes(lq)) return 2;
+
+  // Path prefix match
+  if (lt.startsWith(lq)) return 3;
+
+  // Fuzzy: all query chars appear in order within text
+  let qi = 0;
+  let consecutive = 0;
+  let maxConsecutive = 0;
+  let lastMatchIdx = -2;
+  for (let ti = 0; ti < lt.length && qi < lq.length; ti++) {
+    if (lt[ti] === lq[qi]) {
+      consecutive = (ti === lastMatchIdx + 1) ? consecutive + 1 : 1;
+      if (consecutive > maxConsecutive) maxConsecutive = consecutive;
+      lastMatchIdx = ti;
+      qi++;
+    }
+  }
+  if (qi < lq.length) return 100; // not all chars matched
+
+  // Better score = lower number. More consecutive matches = better.
+  return 10 - Math.min(maxConsecutive, 9);
+}
+
+function sortFileSuggestions(
+  suggestions: SuggestionItem[],
   query: string,
-  dir: string,
-  depth: number,
 ): SuggestionItem[] {
-  if (depth > 3) return [];
-  const results: SuggestionItem[] = [];
+  return suggestions.sort((a, b) => {
+    const aLabel = a.label || "";
+    const bLabel = b.label || "";
+    const aScore = fuzzyScore(aLabel, query);
+    const bScore = fuzzyScore(bLabel, query);
+    if (aScore !== bScore) return aScore - bScore;
+    if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+    return aLabel.localeCompare(bLabel, undefined, { sensitivity: "base" });
+  });
+}
+
+function listDirectorySuggestions(
+  dirPath: string,
+  cwd: string,
+  filePart: string,
+): SuggestionItem[] {
+  return readdirSync(dirPath, { withFileTypes: true })
+    .filter((item) => !SKIP_DIRS.has(item.name))
+    .filter((item) => !filePart || item.name.toLowerCase().includes(filePart))
+    .map((item) =>
+      fileSuggestionFromPath(cwd, resolve(dirPath, item.name), item.isDirectory()),
+    );
+}
+
+function searchFileSuggestions(
+  dirPath: string,
+  cwd: string,
+  query: string,
+  results: SuggestionItem[] = [],
+): SuggestionItem[] {
   const lowerQuery = query.toLowerCase();
+
   try {
-    const items = readdirSync(dir, { withFileTypes: true });
-    for (const item of items) {
+    for (const item of readdirSync(dirPath, { withFileTypes: true })) {
       if (SKIP_DIRS.has(item.name)) continue;
-      const fullPath = dir === "." ? item.name : `${dir}/${item.name}`;
-      if (item.isDirectory()) {
-        if (item.name.toLowerCase().includes(lowerQuery)) {
-          results.push({
-            type: "file",
-            path: fullPath + "/",
-            isDir: true,
-            label: fullPath + "/",
-          });
-        }
-        if (depth < 2)
-          results.push(
-            ...searchRecursive(query, join(dir, item.name), depth + 1),
-          );
-      } else if (item.name.toLowerCase().includes(lowerQuery)) {
-        results.push({
-          type: "file",
-          path: fullPath,
-          isDir: false,
-          label: fullPath,
-        });
+      const fullPath = resolve(dirPath, item.name);
+      const isDir = item.isDirectory();
+      const suggestion = fileSuggestionFromPath(cwd, fullPath, isDir);
+      const label = (suggestion.label || "").toLowerCase();
+      if (item.name.toLowerCase().includes(lowerQuery) || label.includes(lowerQuery)) {
+        results.push(suggestion);
       }
-      if (results.length >= 20) break;
+      if (isDir) searchFileSuggestions(fullPath, cwd, query, results);
     }
   } catch {
     /* ignore */
   }
+
   return results;
 }
 
-function getFileSuggestions(query: string): SuggestionItem[] {
-  if (!query) return searchRecursive(".", ".", 0);
-  const parts = query.split("/");
-  const prefix = parts.length > 1 ? parts.slice(0, -1).join("/") : ".";
-  const dir = prefix === "" ? "." : prefix;
-  const filePart = parts[parts.length - 1].toLowerCase();
+export function getFileSuggestions(query: string, cwd = process.cwd()): SuggestionItem[] {
+  const normalizedQuery = toSlash(query);
+  const slashIndex = normalizedQuery.lastIndexOf("/");
+  const isDirectoryQuery = !normalizedQuery || normalizedQuery.endsWith("/");
+  const hasDirectoryPrefix = slashIndex >= 0;
+  const dirQuery = isDirectoryQuery
+    ? normalizedQuery || "."
+    : hasDirectoryPrefix
+      ? normalizedQuery.slice(0, slashIndex) || "."
+      : ".";
+  const filePart = isDirectoryQuery
+    ? ""
+    : normalizedQuery.slice(slashIndex + 1).toLowerCase();
+
   try {
-    const items = readdirSync(dir, { withFileTypes: true });
-    const results: SuggestionItem[] = [];
-    for (const item of items) {
-      if (SKIP_DIRS.has(item.name)) continue;
-      if (!item.name.toLowerCase().includes(filePart)) continue;
-      const fullPath = dir === "." ? item.name : `${dir}/${item.name}`;
-      results.push({
-        type: "file",
-        path: fullPath,
-        isDir: item.isDirectory(),
-        label: fullPath,
-      });
-    }
-    return results.slice(0, 15);
+    const dirPath = resolve(cwd, dirQuery);
+    const suggestions =
+      !normalizedQuery || hasDirectoryPrefix
+        ? listDirectorySuggestions(dirPath, cwd, filePart)
+        : searchFileSuggestions(cwd, cwd, normalizedQuery);
+    return sortFileSuggestions(suggestions, filePart || normalizedQuery);
   } catch {
     return [];
   }
@@ -144,11 +210,11 @@ function getAtMention(
   return { query: match[1], atIndex: match.index! };
 }
 
-function applyFileSuggestion(input: string, filePath: string): string {
+function applyFileSuggestion(input: string, filePath: string, isDir = false): string {
   const atIndex = input.lastIndexOf("@");
   const before = input.slice(0, atIndex);
   const rest = input.slice(atIndex).replace(/@\S*/, "");
-  return `${before}@${filePath} ${rest.trim()}`;
+  return `${before}@${filePath}${isDir ? "" : " "}${rest.trimStart()}`;
 }
 
 function SettingsMenu({
@@ -368,17 +434,22 @@ function SuggestionBar({
 
   return (
     <Box flexDirection="column" marginTop={1}>
-      {suggestions.slice(0, 8).map((item, idx) => {
+      {suggestions.map((item, idx) => {
         const sel = idx === selectedIndex;
+        const name = item.label || item.path || "";
+        const desc = item.isDir ? "directory" : "file";
         return (
           <Box key={idx}>
-            <Text
-              color={sel ? "black" : item.isDir ? "yellow" : "gray"}
-              backgroundColor={sel ? "white" : undefined}
-            >
-              {sel ? " → " : "   "}
-              {item.isDir ? "▸ " : "  "}
-              {item.label}
+            {sel ? (
+              <Text backgroundColor="white" color="black" bold>
+                {name}
+              </Text>
+            ) : (
+              <Text color="gray">{name}</Text>
+            )}
+            <Text color="gray" dimColor>
+              {" "}
+              — {desc}
             </Text>
           </Box>
         );
@@ -391,7 +462,7 @@ function SuggestionBar({
   );
 }
 
-function App({ agent, mcpManager, version, resumeChatId }: AppProps) {
+function App({ agent, mcpManager, version, resumeChatId, onCurrentChatChange }: AppProps) {
   const { exit } = useApp();
   const [input, setInput] = useState("");
   const [suggestions, setSuggestions] = useState<SuggestionItem[]>([]);
@@ -453,6 +524,10 @@ function App({ agent, mcpManager, version, resumeChatId }: AppProps) {
     getChatList,
     compactMessages,
   } = useMessageProcessing(agent);
+
+  useEffect(() => {
+    onCurrentChatChange?.(currentChatId);
+  }, [currentChatId, onCurrentChatChange]);
 
   const totalTokens =
     messages.reduce((sum, m) => sum + (m.content?.length || 0), 0) / 4;
@@ -575,7 +650,7 @@ function App({ agent, mcpManager, version, resumeChatId }: AppProps) {
     const item = suggestions[idx];
     if (!item) return;
     if (item.type === "command") setInput(item.name + " ");
-    else setInput(applyFileSuggestion(input, item.path!));
+    else setInput(applyFileSuggestion(input, item.path!, item.isDir));
     setSuggestions([]);
     setSelectedSuggestionIndex(-1);
   }
@@ -590,9 +665,10 @@ function App({ agent, mcpManager, version, resumeChatId }: AppProps) {
       setInput("");
       handleCommand(item.name!);
     } else {
-      setInput(applyFileSuggestion(input, item.path!));
+      setInput(applyFileSuggestion(input, item.path!, item.isDir));
       setSuggestions([]);
       setSelectedSuggestionIndex(-1);
+      suggestionExecutedRef.current = false;
     }
   }
 
@@ -1075,7 +1151,7 @@ Write the file using the write_file tool. Make it concise and practical — this
       );
       return;
     }
-    await processMessage(value);
+    await processMessage(expandFileMentions(value), value);
   };
 
   const modelName =
