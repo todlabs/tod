@@ -17,6 +17,7 @@ import {
 } from "../tools/index.js";
 import type { ToolResult } from "../tools/index.js";
 import { logger } from "../services/logger.js";
+import { findTriggeredSkills } from "../services/skills.js";
 
 const MAX_TOOL_RETRIES = 2;
 const MAX_SAME_TOOL_CALLS = 3;
@@ -221,6 +222,7 @@ export class Agent {
       try {
         if (attempt === 0) {
           this.messages.addMessage("user", userMessage);
+          this.loadTriggeredSkills(userMessage);
         }
 
         await this.runAgentLoop(callbacks);
@@ -623,7 +625,9 @@ export class Agent {
     const summary = await this.llm.createSummary(conversationText);
     const newTokens = Math.round(summary.length / 4);
 
-    this.messages.compact(summary);
+    // Structured compact: preserve last few user/assistant turns so the next
+    // request still has fresh context, plus the structured summary.
+    this.messages.compactStructured(summary, 4);
 
     logger.info("Context compacted", {
       oldTokens,
@@ -660,6 +664,29 @@ export class Agent {
       baseURL: config.baseURL,
       isolatedContext: true,
     });
+  }
+
+  /**
+   * Inspect the latest user message for skill triggers; inject matching
+   * on-demand skills as ephemeral context so the model has them for this turn.
+   */
+  private loadTriggeredSkills(userMessage: string): void {
+    try {
+      const matched = findTriggeredSkills(process.cwd(), userMessage);
+      for (const skill of matched) {
+        const key = `skill:${skill.name}`;
+        const content = `ACTIVE SKILL [${skill.name}] ${skill.description}\n${skill.content}`;
+        this.messages.setEphemeralContext(key, content);
+        logger.info("Auto-loaded skill via trigger", {
+          skill: skill.name,
+          triggers: skill.triggers,
+        });
+      }
+    } catch (error) {
+      logger.error("Skill trigger matching failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   setMcpToolDescriptions(descriptions: string): void {

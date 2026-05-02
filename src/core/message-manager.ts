@@ -222,6 +222,41 @@ export class MessageManager {
     logger.debug('Messages compacted', { summaryLength: summary.length });
   }
 
+  /**
+   * Replace history with a structured summary while preserving the last
+   * `keepRecent` user/assistant turns intact. Tool messages are dropped from
+   * the kept tail (their context is captured in the summary), and any
+   * orphaned tool_calls on the boundary assistant message are stripped so
+   * the provider doesn't reject the next request with a dangling tool_call_id.
+   */
+  compactStructured(summary: string, keepRecent: number = 4): void {
+    const systemMessage = this.messages[0];
+    const conversation = this.messages.slice(1);
+
+    // Walk from the end and pick the last N user/assistant content messages.
+    const preserved: ChatCompletionMessageParam[] = [];
+    for (let i = conversation.length - 1; i >= 0 && preserved.length < keepRecent; i--) {
+      const msg: any = conversation[i];
+      if (msg.role === 'tool') continue;
+      if (msg.role === 'assistant' && msg.tool_calls) continue; // drop tool-call wrappers
+      preserved.unshift(msg);
+    }
+
+    this.messages = [
+      systemMessage,
+      {
+        role: 'system',
+        content: `Previous session summary (compacted):\n${summary}`,
+      },
+      ...preserved,
+    ];
+
+    logger.debug('Messages compacted (structured)', {
+      summaryLength: summary.length,
+      preservedCount: preserved.length,
+    });
+  }
+
   estimateTokens(): number {
     const text = this.messages
       .map((msg) => {
