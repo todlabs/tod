@@ -9,6 +9,22 @@ import { setMcpManager } from "./tools/index.js";
 import { loadChat, getCurrentChatId } from "./services/chat-storage.js";
 import { spawn, spawnSync } from "child_process";
 
+// Last-resort guards — keep the process alive on unexpected errors
+// instead of crashing the whole TUI session. We log and continue.
+process.on("uncaughtException", (error) => {
+  logger.error("Uncaught exception", {
+    message: error instanceof Error ? error.message : String(error),
+    stack: error instanceof Error ? error.stack : undefined,
+  });
+});
+
+process.on("unhandledRejection", (reason) => {
+  logger.error("Unhandled rejection", {
+    reason: reason instanceof Error ? reason.message : String(reason),
+    stack: reason instanceof Error ? reason.stack : undefined,
+  });
+});
+
 // Parse CLI args
 const args = process.argv.slice(2);
 let resumeChatId: string | undefined;
