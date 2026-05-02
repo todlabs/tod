@@ -18,7 +18,6 @@ import {
 import type { ToolResult } from "../tools/index.js";
 import { logger } from "../services/logger.js";
 
-const MAX_AGENT_ITERATIONS = 25;
 const MAX_TOOL_RETRIES = 2;
 const MAX_SAME_TOOL_CALLS = 3;
 const MAX_PROCESS_MESSAGE_RETRIES = 2;
@@ -299,7 +298,7 @@ export class Agent {
 
     const recentToolCalls: Array<{ name: string; args: string }> = [];
 
-    for (let iteration = 0; iteration < MAX_AGENT_ITERATIONS; iteration++) {
+    for (let iteration = 0; ; iteration++) {
       const signal = this.abortController?.signal;
       if (signal?.aborted) break;
 
